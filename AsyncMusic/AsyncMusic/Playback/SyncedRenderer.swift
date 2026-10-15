@@ -6,18 +6,13 @@
 import Foundation
 import os
 
-/// Decoded audio the render thread can read without touching any Swift object.
-nonisolated struct PCMSamples {
-    var left: UnsafePointer<Float>
-    var right: UnsafePointer<Float>
-    var frameCount: Int
-    var sampleRate: Double
-}
-
 nonisolated enum RenderSource {
     case silence
     case metronome
-    case pcm(PCMSamples)
+    /// Unretained so copying the control state on the render thread never touches reference
+    /// counts. Whoever installs it must keep the buffer alive until the render thread can no
+    /// longer be using it (see `SyncedPlayer`).
+    case stream(Unmanaged<StreamBuffer>)
 }
 
 /// Snapshot of what the render thread is doing, for the debug UI.
@@ -32,6 +27,8 @@ nonisolated struct RenderStats: Sendable {
     var jumps = 0
     /// Source position currently being output, in seconds.
     var mediaSeconds: Double = 0
+    /// How far the stream buffer reaches beyond the current position, in seconds.
+    var bufferedSeconds: Double = 0
 }
 
 /// Works out, for every render cycle, which part of the source must be heard when that buffer
@@ -117,8 +114,8 @@ nonisolated final class SyncedRenderer: @unchecked Sendable {
             sourceRate = 0
         case .metronome:
             sourceRate = outputRate
-        case let .pcm(samples):
-            sourceRate = samples.sampleRate
+        case let .stream(buffer):
+            sourceRate = buffer._withUnsafeGuaranteedRef { $0.sampleRate }
         }
 
         stats.hostTimeValid = hostTime != nil
@@ -128,6 +125,7 @@ nonisolated final class SyncedRenderer: @unchecked Sendable {
             wasAudible = false
             stats.isPlaying = false
             stats.correctionPPM = 0
+            stats.bufferedSeconds = 0
             publishStats()
             return
         }
@@ -159,18 +157,43 @@ nonisolated final class SyncedRenderer: @unchecked Sendable {
         }
 
         let increment = sourceRate / outputRate * (1 + correction)
-        let fadeLength = Float(max(Int(configuration.fadeDuration * outputRate), 1))
-        for frame in 0 ..< frameCount {
-            let readPosition = position + Double(frame) * increment
-            var (l, r) = sample(at: readPosition, outputRate: outputRate)
-            if fadeRemaining > 0 {
-                let gain = 1 - Float(fadeRemaining) / fadeLength
-                l *= gain
-                r *= gain
-                fadeRemaining -= 1
+        switch current.source {
+        case .silence:
+            left.update(repeating: 0, count: frameCount)
+            right.update(repeating: 0, count: frameCount)
+        case .metronome:
+            for frame in 0 ..< frameCount {
+                let value = Metronome.sample(atSeconds: (position + Double(frame) * increment) / outputRate)
+                left[frame] = value
+                right[frame] = value
             }
-            left[frame] = l
-            right[frame] = r
+        case let .stream(buffer):
+            buffer._withUnsafeGuaranteedRef { buffer in
+                let range = buffer.validRange()
+                for frame in 0 ..< frameCount {
+                    let (l, r) = Self.interpolate(buffer, range: range, at: position + Double(frame) * increment)
+                    left[frame] = l
+                    right[frame] = r
+                }
+                // The writer only overwrites frames far behind playback, but if it ever lapped
+                // us mid-read, play silence rather than whatever it wrote there.
+                let oldestRead = max(range.lowerBound, Int64(position.rounded(.down)) - 1)
+                if !buffer.isStillValid(from: oldestRead) {
+                    left.update(repeating: 0, count: frameCount)
+                    right.update(repeating: 0, count: frameCount)
+                }
+                stats.bufferedSeconds = max(0, Double(range.upperBound) - position) / sourceRate
+            }
+        }
+
+        if fadeRemaining > 0 {
+            let fadeLength = Float(max(Int(configuration.fadeDuration * outputRate), 1))
+            for frame in 0 ..< min(fadeRemaining, frameCount) {
+                let gain = 1 - Float(fadeRemaining - frame) / fadeLength
+                left[frame] *= gain
+                right[frame] *= gain
+            }
+            fadeRemaining = max(0, fadeRemaining - frameCount)
         }
         position += Double(frameCount) * increment
         wasAudible = true
@@ -187,37 +210,31 @@ nonisolated final class SyncedRenderer: @unchecked Sendable {
         statsLock.withLockIfAvailable { $0 = snapshot }
     }
 
+    /// Four-point cubic Hermite interpolation; silence outside `range`.
     @inline(__always)
-    private func sample(at position: Double, outputRate: Double) -> (Float, Float) {
-        switch current.source {
-        case .silence:
-            return (0, 0)
-        case .metronome:
-            let value = Metronome.sample(atSeconds: position / outputRate)
-            return (value, value)
-        case let .pcm(samples):
-            return (
-                Self.interpolate(samples.left, count: samples.frameCount, at: position),
-                Self.interpolate(samples.right, count: samples.frameCount, at: position)
-            )
-        }
-    }
-
-    /// Four-point cubic Hermite interpolation; silence outside the buffer.
-    @inline(__always)
-    private static func interpolate(_ samples: UnsafePointer<Float>, count: Int, at position: Double) -> Float {
+    private static func interpolate(_ buffer: StreamBuffer, range: Range<Int64>, at position: Double) -> (Float, Float) {
         let base = position.rounded(.down)
-        guard base > -2, base < Double(count) else { return 0 }
-        let index = Int(base)
+        let index = Int64(base)
+        guard index + 2 >= range.lowerBound, index - 1 < range.upperBound else { return (0, 0) }
         let t = Float(position - base)
 
         @inline(__always)
-        func value(_ i: Int) -> Float { i >= 0 && i < count ? samples[i] : 0 }
+        func value(_ frame: Int64) -> (Float, Float) {
+            range.contains(frame) ? buffer.sample(at: frame) : (0, 0)
+        }
 
         let y0 = value(index - 1)
         let y1 = value(index)
         let y2 = value(index + 1)
         let y3 = value(index + 2)
+        return (
+            hermite(y0.0, y1.0, y2.0, y3.0, t),
+            hermite(y0.1, y1.1, y2.1, y3.1, t)
+        )
+    }
+
+    @inline(__always)
+    private static func hermite(_ y0: Float, _ y1: Float, _ y2: Float, _ y3: Float, _ t: Float) -> Float {
         let c1 = 0.5 * (y2 - y0)
         let c2 = y0 - 2.5 * y1 + 2 * y2 - 0.5 * y3
         let c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2)

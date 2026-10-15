@@ -239,6 +239,9 @@ private struct RenderStatsView: View {
             LabeledContent("Schedule error", value: stats.isPlaying ? String(format: "%+.0f µs", stats.errorMicroseconds) : "–")
             LabeledContent("Rate correction", value: String(format: "%+.1f ppm", stats.correctionPPM))
             LabeledContent("Repositions", value: "\(stats.jumps)")
+            if stats.isPlaying, stats.bufferedSeconds > 0 {
+                LabeledContent("Buffered ahead", value: String(format: "%.1f s", stats.bufferedSeconds))
+            }
         }
     }
 }

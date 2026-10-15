@@ -47,7 +47,7 @@ final class ClockSyncSession {
 
     private(set) var isLoadingTrack = false
     /// The file the leader plays with "Play file".
-    private(set) var selectedTrack: PCMTrack?
+    private(set) var selectedTrack: MediaFile?
 
     private(set) var role: Role = .off
     private(set) var status = "Idle"
@@ -146,7 +146,7 @@ final class ClockSyncSession {
         append("Stop")
     }
 
-    /// Decodes a file and makes it available for playback. Followers must load the same file
+    /// Reads a file's format and makes it available for playback. Followers must load the same file
     /// to play along; it is matched by content, not name.
     func loadTrack(from url: URL) {
         isLoadingTrack = true
@@ -154,7 +154,7 @@ final class ClockSyncSession {
             defer { isLoadingTrack = false }
             do {
                 let track = try await Task.detached(priority: .userInitiated) {
-                    try PCMTrack.load(contentsOf: url)
+                    try MediaFile.load(contentsOf: url)
                 }.value
                 player.add(track)
                 selectedTrack = track
@@ -169,7 +169,7 @@ final class ClockSyncSession {
         switch source {
         case PlaybackSource.none: "nothing"
         case PlaybackSource.metronome: "metronome"
-        default: player.tracks[source].map { "“\($0.name)”" } ?? String(format: "unknown file %016llx", source)
+        default: player.files[source].map { "“\($0.name)”" } ?? String(format: "unknown file %016llx", source)
         }
     }
 

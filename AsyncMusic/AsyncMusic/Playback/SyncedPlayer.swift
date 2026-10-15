@@ -11,7 +11,8 @@ import UIKit
 #endif
 
 /// Owns the audio engine and keeps the `SyncedRenderer` fed with the clock map, the playback
-/// state and this device's output latency.
+/// state and this device's output latency. Files are played through a `StreamBuffer` that a
+/// `FileStreamFeeder` keeps filled a few seconds ahead, so nothing is decoded up front.
 ///
 /// While started, the engine runs continuously (rendering silence when nothing plays). On iOS,
 /// together with the `audio` background mode, that is what keeps the app — and with it the
@@ -30,7 +31,7 @@ final class SyncedPlayer {
     private(set) var reportedLatency: Double = 0
     private(set) var ioBufferDuration: Double = 0
     private(set) var playback = PlaybackState.stopped
-    private(set) var tracks: [UInt64: PCMTrack] = [:]
+    private(set) var files: [UInt64: MediaFile] = [:]
 
     /// Extra delay on top of the reported latency, in milliseconds. Increase it when this
     /// device sounds late compared with the others (common with Bluetooth, whose reported
@@ -44,7 +45,7 @@ final class SyncedPlayer {
 
     /// True when the playing source is a file this device hasn't loaded.
     var isMissingSource: Bool {
-        playback.isPlaying && playback.source != PlaybackSource.metronome && tracks[playback.source] == nil
+        playback.isPlaying && playback.source != PlaybackSource.metronome && files[playback.source] == nil
     }
 
     var renderStats: RenderStats { renderer.latestStats }
@@ -64,6 +65,15 @@ final class SyncedPlayer {
     @ObservationIgnored private var playbackGeneration = 0
     @ObservationIgnored private var isInBackground = false
     @ObservationIgnored private var idleReleaseTask: Task<Void, Never>?
+    /// Readable from the feeder's queue, which paces decoding on the playing position.
+    @ObservationIgnored private let clockMapLock = OSAllocatedUnfairLock<ClockMap?>(initialState: nil)
+    @ObservationIgnored private var activeFeeder: FileStreamFeeder?
+    /// Buffers recently swapped out. The render thread holds them unretained and may keep
+    /// using one until its next successful try-lock, so they are released only after a delay.
+    @ObservationIgnored private var retiredBuffers: [StreamBuffer] = []
+
+    /// How far ahead of playback files are decoded.
+    private let streamAheadDuration = 8.0
 
     private static let manualOffsetKey = "SyncedPlayer.manualOffset"
     private static let logger = Logger(subsystem: "me.ktiays.AsyncMusic", category: "Playback")
@@ -94,6 +104,14 @@ final class SyncedPlayer {
 
     func update(clockMap: ClockMap?) {
         renderer.update { $0.clockMap = clockMap }
+        let wasUnknown = clockMapLock.withLock { state in
+            defer { state = clockMap }
+            return state == nil
+        }
+        // A file stream can only start once we know where playback is.
+        if wasUnknown, clockMap != nil, activeFeeder == nil, files[playback.source] != nil {
+            applySource()
+        }
     }
 
     func update(playback: PlaybackState) {
@@ -104,9 +122,9 @@ final class SyncedPlayer {
         updateIdleRelease()
     }
 
-    func add(_ track: PCMTrack) {
-        tracks[track.id] = track
-        if playback.source == track.id {
+    func add(_ file: MediaFile) {
+        files[file.id] = file
+        if playback.source == file.id {
             applySource()
         }
     }
@@ -168,13 +186,14 @@ final class SyncedPlayer {
     }
 
     private func applySource() {
+        stopStream()
         let source: RenderSource
         if !playback.isPlaying {
             source = .silence
         } else if playback.source == PlaybackSource.metronome {
             source = .metronome
-        } else if let track = tracks[playback.source] {
-            source = .pcm(track.samples)
+        } else if let file = files[playback.source], let buffer = startStream(for: file) {
+            source = .stream(Unmanaged.passUnretained(buffer))
         } else {
             source = .silence
         }
@@ -185,6 +204,51 @@ final class SyncedPlayer {
             $0.playback = playback
             $0.source = source
             $0.playbackGeneration = generation
+        }
+    }
+
+    /// Starts decoding `file` from just before the position being heard now (or from the
+    /// scheduled start, if that is still ahead). Returns nil until the clock map is known.
+    private func startStream(for file: MediaFile) -> StreamBuffer? {
+        guard let clockMap = clockMapLock.withLock({ $0 }) else { return nil }
+        let playback = playback
+        let rate = file.sampleRate
+        let heardNow = playback.mediaTime(atLeaderTime: clockMap.leaderTime(fromLocal: HostClock.now()))
+        // A little slack before "now" so a late join loses nothing to the time decoding takes.
+        let startTime = max(playback.startMediaTime, heardNow - 100_000_000, 0)
+        let startFrame = Int64((Double(startTime) * rate / 1e9).rounded(.down))
+
+        // Room for the read-ahead plus a few seconds behind playback, which the writer may
+        // overwrite only once they have been heard.
+        let buffer = StreamBuffer(sampleRate: rate, capacity: Int((streamAheadDuration + 4) * rate), startFrame: startFrame)
+        var configuration = FileStreamFeeder.Configuration()
+        configuration.aheadDuration = streamAheadDuration
+        let clockMapLock = clockMapLock
+        let feeder = FileStreamFeeder(file: file, buffer: buffer, startFrame: startFrame, configuration: configuration) {
+            clockMapLock.withLock { $0 }.map { playback.mediaTime(atLeaderTime: $0.leaderTime(fromLocal: HostClock.now())) }
+        }
+        feeder.onStall = { [weak self, weak feeder] in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self, let feeder, self.activeFeeder === feeder else { return }
+                    self.applySource()
+                }
+            }
+        }
+        activeFeeder = feeder
+        feeder.start()
+        return buffer
+    }
+
+    private func stopStream() {
+        guard let feeder = activeFeeder else { return }
+        activeFeeder = nil
+        feeder.stop()
+        let buffer = feeder.buffer
+        retiredBuffers.append(buffer)
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            self?.retiredBuffers.removeAll { $0 === buffer }
         }
     }
 
