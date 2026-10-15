@@ -3,6 +3,7 @@
 //  Copyright (c) 2026 ktiays. All rights reserved.
 //
 
+import AsyncMusicCore
 import Foundation
 import Network
 import os
@@ -12,7 +13,7 @@ nonisolated struct ClockSyncRound: Sendable {
     var index: Int
     /// Follower host time at which the round finished.
     var localTime: Int64
-    var verdict: ClockEstimator.Verdict
+    var verdict: ClockVerdict
     var probesSent: Int
     var probesReceived: Int
     /// The fastest probe of the round, if any reply arrived.
@@ -77,7 +78,7 @@ nonisolated final class ClockSyncFollower: @unchecked Sendable {
     /// Pings are only sent on a ready connection; one queued earlier would carry a stale t0.
     private var connectionReady = false
     private var silentRounds = 0
-    private var estimator = ClockEstimator()
+    private var estimator = ClockEstimator(asyncmusic.ClockEstimatorConfiguration())
     /// True from `start()` until `stop()`, across reconnects.
     private var running = false
     private var roundIndex = 0
@@ -202,10 +203,10 @@ nonisolated final class ClockSyncFollower: @unchecked Sendable {
         } else if !roundProbes.isEmpty {
             silentRounds = 0
         }
-        let best = roundProbes.min { $0.roundTrip < $1.roundTrip }
-        let map = estimator.map
+        let best = roundProbes.min { $0.roundTrip() < $1.roundTrip() }
+        let map = estimator.fittedMap
         let residual = best.flatMap { best in
-            map.map { best.offset - $0.offset(atLocal: best.localMidpoint) }
+            map.map { best.offset() - $0.offset(atLocal: best.localMidpoint()) }
         }
 
         onRound?(ClockSyncRound(
@@ -217,11 +218,11 @@ nonisolated final class ClockSyncFollower: @unchecked Sendable {
             best: best,
             residual: residual,
             map: map,
-            minimumRoundTrip: estimator.minimumRoundTrip,
-            residualRMS: estimator.residualRMS,
-            acceptedCount: estimator.acceptedCount,
-            rejectedCount: estimator.rejectedCount,
-            windowCount: estimator.points.count
+            minimumRoundTrip: estimator.lowestRoundTrip,
+            residualRMS: estimator.residualRMS(),
+            acceptedCount: Int(estimator.acceptedCount()),
+            rejectedCount: Int(estimator.rejectedCount()),
+            windowCount: Int(estimator.windowCount())
         ))
 
         let interval = round < configuration.warmupRounds ? configuration.warmupInterval : configuration.steadyInterval

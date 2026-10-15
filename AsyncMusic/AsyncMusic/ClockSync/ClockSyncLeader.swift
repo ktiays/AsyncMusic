@@ -3,6 +3,7 @@
 //  Copyright (c) 2026 ktiays. All rights reserved.
 //
 
+import AsyncMusicCore
 import Foundation
 import Network
 import os
@@ -57,7 +58,7 @@ nonisolated final class ClockSyncLeader: @unchecked Sendable {
     private var lastHeard: [ObjectIdentifier: Int64] = [:]
     private var running = false
     private var lastSleepDuration = HostClock.sleepDuration()
-    private var playback = PlaybackState.stopped
+    private var playback = PlaybackState.stopped()
     private var playbackRevision: UInt32 = 0
     private var audioPort: UInt16?
     private var rebroadcastTimer: DispatchSourceTimer?
@@ -134,7 +135,7 @@ nonisolated final class ClockSyncLeader: @unchecked Sendable {
         lastSleepDuration = slept
         session = UInt64.random(in: .min ... .max)
         // Silence over the new timeline would be ambiguous; announce stopped playback.
-        playback = .stopped
+        playback = .stopped()
         playbackRevision &+= 1
         onPlaybackReset?()
     }

@@ -6,6 +6,10 @@
 	objectVersion = 110;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		ED8185A030812036006FD72C /* AsyncMusicCore in Frameworks */ = {isa = PBXBuildFile; productRef = ED8185A230812036006FD72C /* AsyncMusicCore */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		ED81851C30812036006FD72C /* AsyncMusic.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AsyncMusic.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -22,6 +26,7 @@
 		ED81851930812036006FD72C /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			files = (
+				ED8185A030812036006FD72C /* AsyncMusicCore in Frameworks */,
 			);
 		};
 /* End PBXFrameworksBuildPhase section */
@@ -60,6 +65,9 @@
 				ED81851E30812036006FD72C /* AsyncMusic */,
 			);
 			name = AsyncMusic;
+			packageProductDependencies = (
+				ED8185A230812036006FD72C /* AsyncMusicCore */,
+			);
 			productName = AsyncMusic;
 			productReference = ED81851C30812036006FD72C /* AsyncMusic.app */;
 			productType = "com.apple.product-type.application";
@@ -88,6 +96,9 @@
 			);
 			mainGroup = ED81851330812036006FD72C;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				ED8185A130812036006FD72C /* XCLocalSwiftPackageReference "../Core" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = ED81851D30812036006FD72C /* Products */;
 			projectDirPath = "";
@@ -272,6 +283,7 @@
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_INTEROP_MODE = objcxx;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2,7";
@@ -320,6 +332,7 @@
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_INTEROP_MODE = objcxx;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2,7";
@@ -347,6 +360,20 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		ED8185A130812036006FD72C /* XCLocalSwiftPackageReference "../Core" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../Core;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		ED8185A230812036006FD72C /* AsyncMusicCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = AsyncMusicCore;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = ED81851430812036006FD72C /* Project object */;
 	validationLevel = 1;

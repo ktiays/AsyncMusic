@@ -3,6 +3,7 @@
 //  Copyright (c) 2026 ktiays. All rights reserved.
 //
 
+import AsyncMusicCore
 import Foundation
 import Network
 import os
@@ -13,7 +14,8 @@ nonisolated struct OutgoingStream: @unchecked Sendable {
     let id: UInt64
     let source: UInt64
     let buffer: StreamBuffer
-    let playback: PlaybackState
+    /// Where playback is, to start late joiners at the heard position.
+    let position: PlaybackPosition
 }
 
 /// Leader side of audio streaming: accepts one TCP connection per follower and forwards the
@@ -28,7 +30,25 @@ nonisolated struct OutgoingStream: @unchecked Sendable {
 /// the buffer that it has not sent yet. That means a burst on start (which fills followers'
 /// buffers within the startup delay) and then a trickle at the playback rate. A follower
 /// joining mid-stream gets audio from the currently playing position.
+///
+/// Followers report how far their buffer reaches, which `waitUntilBuffered` uses to start
+/// playback as soon as everyone has enough (adaptive start) instead of after a fixed delay.
 nonisolated final class AudioStreamServer: @unchecked Sendable {
+    struct Readiness: Sendable {
+        var ready: Int
+        var total: Int
+        var timedOut: Bool
+    }
+
+    private struct Waiter {
+        var streamID: UInt64
+        var frame: Int64
+        var deadline: DispatchTime
+        var completion: @Sendable (Readiness) -> Void
+    }
+
+    let codec: AudioStreamCodec
+
     var onPortChange: (@Sendable (UInt16?) -> Void)?
     var onReceiversChange: (@Sendable (Int) -> Void)?
     var onError: (@Sendable (String) -> Void)?
@@ -39,8 +59,13 @@ nonisolated final class AudioStreamServer: @unchecked Sendable {
     private var stream: OutgoingStream?
     private var timer: DispatchSourceTimer?
     private var running = false
+    private var waiters: [Waiter] = []
 
     static let logger = Logger(subsystem: "me.ktiays.AsyncMusic", category: "AudioStream")
+
+    init(codec: AudioStreamCodec = .alac) {
+        self.codec = codec
+    }
 
     func start() {
         queue.async { [self] in
@@ -69,6 +94,7 @@ nonisolated final class AudioStreamServer: @unchecked Sendable {
             senders.values.forEach { $0.connection.cancel() }
             senders = [:]
             onReceiversChange?(0)
+            checkWaiters()
         }
     }
 
@@ -77,6 +103,35 @@ nonisolated final class AudioStreamServer: @unchecked Sendable {
         queue.async { [self] in
             self.stream = stream
             senders.values.filter(\.isReady).forEach { $0.begin(stream) }
+            checkWaiters()
+        }
+    }
+
+    /// Calls `completion` (on the server's queue) once every connected follower has buffered
+    /// `stream` up to `frame`, or after `timeout` seconds, whichever comes first. With no
+    /// followers connected it completes right away.
+    func waitUntilBuffered(stream streamID: UInt64, through frame: Int64, timeout: Double, completion: @escaping @Sendable (Readiness) -> Void) {
+        queue.async { [self] in
+            waiters.append(Waiter(streamID: streamID, frame: frame, deadline: .now() + timeout, completion: completion))
+            checkWaiters()
+            queue.asyncAfter(deadline: .now() + timeout) { [weak self] in
+                self?.checkWaiters()
+            }
+        }
+    }
+
+    private func checkWaiters() {
+        guard !waiters.isEmpty else { return }
+        let now = DispatchTime.now()
+        let receivers = senders.values.filter(\.isReady)
+        waiters.removeAll { waiter in
+            // Waiting for a stream that is no longer current is pointless.
+            let current = stream?.id == waiter.streamID
+            let ready = receivers.filter { $0.hasBuffered(stream: waiter.streamID, through: waiter.frame) }.count
+            let timedOut = now >= waiter.deadline
+            guard !current || ready == receivers.count || timedOut else { return false }
+            waiter.completion(Readiness(ready: ready, total: receivers.count, timedOut: timedOut && ready < receivers.count))
+            return true
         }
     }
 
@@ -111,7 +166,7 @@ nonisolated final class AudioStreamServer: @unchecked Sendable {
 
     private func accept(_ connection: NWConnection) {
         let id = ObjectIdentifier(connection)
-        let sender = Sender(connection: connection, queue: queue)
+        let sender = Sender(connection: connection, queue: queue, codec: codec)
         senders[id] = sender
         onReceiversChange?(senders.count)
         connection.stateUpdateHandler = { [weak self, weak connection] state in
@@ -125,12 +180,20 @@ nonisolated final class AudioStreamServer: @unchecked Sendable {
                 connection?.cancel()
                 if senders.removeValue(forKey: id) != nil {
                     onReceiversChange?(senders.count)
+                    checkWaiters()
                 }
             default:
                 break
             }
         }
         connection.start(queue: queue)
+        connection.receiveAudioStreamMessages { [weak self] message in
+            guard let self, case let .bufferReport(streamID, endFrame) = message else { return }
+            senders[id]?.report(stream: streamID, endFrame: endFrame)
+            checkWaiters()
+        } onEnd: { [weak connection] _ in
+            connection?.cancel()
+        }
     }
 }
 
@@ -143,16 +206,21 @@ private nonisolated final class Sender: @unchecked Sendable {
     private var stream: OutgoingStream?
     private var nextFrame: Int64 = 0
     private var inFlight = 0
+    private let codec: AudioStreamCodec
+    private var encoder: ALACEncoder?
+    /// The follower's last buffer report.
+    private var reported: (streamID: UInt64, endFrame: Int64)?
 
-    private let chunkFrames = 4096
+    private let chunkFrames = ALACCodec.framesPerPacket
     /// Sends handed to the network stack but not yet consumed by it. TCP's own send buffer
     /// sits behind this, so a slow follower backs up here instead of growing memory.
     private let maximumInFlight = 8
     private var scratch: [Int16]
 
-    init(connection: NWConnection, queue: DispatchQueue) {
+    init(connection: NWConnection, queue: DispatchQueue, codec: AudioStreamCodec) {
         self.connection = connection
         self.queue = queue
+        self.codec = codec
         scratch = [Int16](repeating: 0, count: chunkFrames * 2)
     }
 
@@ -162,13 +230,29 @@ private nonisolated final class Sender: @unchecked Sendable {
         self.stream = stream
         guard let stream else { return }
         let range = stream.buffer.validRange()
-        let rate = stream.buffer.sampleRate
-        let heard = stream.playback.mediaTime(atLeaderTime: HostClock.now())
-        let heardFrame = Int64((Double(heard) * rate / 1e9).rounded(.down))
+        let rate = stream.buffer.sampleRate()
+        let heardFrame = stream.position.heardMediaTime().map { Int64((Double($0) * rate / 1e9).rounded(.down)) } ?? range.lowerBound
         // A little earlier than what is heard, to cover the follower's output latency.
         nextFrame = min(max(range.lowerBound, heardFrame - Int64(0.1 * rate)), range.upperBound)
-        send(.streamStart(streamID: stream.id, source: stream.source, sampleRate: rate, startFrame: nextFrame))
+
+        var cookie = Data()
+        if codec == .alac {
+            if encoder == nil || encoder?.sampleRate != rate {
+                encoder = ALACEncoder(sampleRate: rate)
+            }
+            cookie = encoder?.magicCookie ?? Data()
+        }
+        send(.streamStart(streamID: stream.id, source: stream.source, sampleRate: rate, startFrame: nextFrame, codec: encoder == nil ? .pcm16 : codec, cookie: cookie))
         pump()
+    }
+
+    func report(stream streamID: UInt64, endFrame: Int64) {
+        reported = (streamID, endFrame)
+    }
+
+    func hasBuffered(stream streamID: UInt64, through frame: Int64) -> Bool {
+        guard let reported else { return false }
+        return reported.streamID == streamID && reported.endFrame >= frame
     }
 
     func pump() {
@@ -185,15 +269,25 @@ private nonisolated final class Sender: @unchecked Sendable {
             let count = Int(min(Int64(chunkFrames), range.upperBound - nextFrame))
             guard count > 0 else { return }
 
-            for offset in 0 ..< count {
-                let (left, right) = buffer.sample(at: nextFrame + Int64(offset))
-                scratch[offset * 2] = Self.pcm16(left)
-                scratch[offset * 2 + 1] = Self.pcm16(right)
+            // Fails only if the feeder overwrote these frames mid-copy; the next iteration
+            // then finds `nextFrame` lapped and restarts.
+            let copied = scratch.withUnsafeMutableBufferPointer {
+                buffer.readInterleavedPCM16(nextFrame, Int32(count), $0.baseAddress!)
             }
-            guard buffer.isStillValid(from: nextFrame) else { continue }
+            guard copied else { continue }
 
-            let samples = scratch.withUnsafeBytes { Data($0.prefix(count * 4)) }
-            send(.audio(streamID: stream.id, startFrame: nextFrame, frameCount: count, samples: samples))
+            let payload: Data
+            if codec == .alac, let encoder {
+                guard let packet = scratch.withUnsafeBufferPointer({ encoder.encode(interleaved: $0.baseAddress!, count: count) }) else {
+                    AudioStreamServer.logger.error("ALAC encoding failed; skipping \(count) frames")
+                    nextFrame += Int64(count)
+                    continue
+                }
+                payload = packet
+            } else {
+                payload = scratch.withUnsafeBytes { Data($0.prefix(count * 4)) }
+            }
+            send(.audio(streamID: stream.id, startFrame: nextFrame, frameCount: count, payload: payload))
             nextFrame += Int64(count)
         }
     }
@@ -207,12 +301,5 @@ private nonisolated final class Sender: @unchecked Sendable {
                 self.pump()
             }
         })
-    }
-
-    @inline(__always)
-    private static func pcm16(_ sample: Float) -> Int16 {
-        // Scaling by 2^15 round-trips 16-bit sources exactly. Little-endian on every Apple
-        // platform, so the array's bytes are the wire format.
-        Int16(clamping: Int((sample * 32768).rounded()))
     }
 }

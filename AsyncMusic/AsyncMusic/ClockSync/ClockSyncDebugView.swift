@@ -3,6 +3,7 @@
 //  Copyright (c) 2026 ktiays. All rights reserved.
 //
 
+import AsyncMusicCore
 import Charts
 import SwiftUI
 import UniformTypeIdentifiers
@@ -56,7 +57,7 @@ struct ClockSyncDebugView: View {
     private var leaderSection: some View {
         Section("Leader") {
             LabeledContent("Followers", value: "\(session.followerCount)")
-            LeaderClockLabel(map: .identity)
+            LeaderClockLabel(map: .identity())
         }
     }
 
@@ -88,7 +89,7 @@ struct ClockSyncDebugView: View {
             Section("Estimate") {
                 if let map = round.map {
                     LabeledContent("Offset", value: String(format: "%.3f ms", Double(map.offset(atLocal: round.localTime)) / 1e6))
-                    LabeledContent("Skew", value: String(format: "%+.2f ppm", map.skewPPM))
+                    LabeledContent("Skew", value: String(format: "%+.2f ppm", map.skewPPM()))
                     LeaderClockLabel(map: map)
                 }
                 LabeledContent("Fit jitter (RMS)", value: String(format: "%.0f µs", round.residualRMS / 1e3))
@@ -97,7 +98,7 @@ struct ClockSyncDebugView: View {
                     LabeledContent("Asymmetry bound", value: String(format: "± %.2f ms", Double(minimum) / 2e6))
                 }
                 LabeledContent("Rounds", value: "\(round.acceptedCount) accepted · \(round.rejectedCount) rejected · \(round.windowCount) in window")
-                LabeledContent("Last round", value: "\(round.probesReceived)/\(round.probesSent) replies · \(String(describing: round.verdict))")
+                LabeledContent("Last round", value: "\(round.probesReceived)/\(round.probesSent) replies · \(round.verdict.name)")
             }
 
             Section("Residual vs. fitted line (µs)") {
@@ -134,7 +135,7 @@ struct ClockSyncDebugView: View {
                 if let best = round.best {
                     LineMark(
                         x: .value("Round", round.index),
-                        y: .value("RTT", Double(best.roundTrip) / 1e6)
+                        y: .value("RTT", Double(best.roundTrip()) / 1e6)
                     )
                 }
             }
@@ -146,7 +147,7 @@ struct ClockSyncDebugView: View {
 
     private var playbackSection: some View {
         Section("Playback") {
-            LabeledContent("Now", value: session.player.playback.isPlaying ? session.describe(session.player.playback.source) : "Stopped")
+            LabeledContent("Now", value: session.player.playback.isPlaying() ? session.describe(session.player.playback.source) : "Stopped")
             if session.player.isWaitingForAudio {
                 Label("Waiting for audio from the leader…", systemImage: "hourglass")
                     .foregroundStyle(.secondary)
@@ -176,7 +177,7 @@ struct ClockSyncDebugView: View {
                     .disabled(session.selectedTrack == nil)
                     Spacer()
                     Button("Stop", role: .destructive) { session.stopPlayback() }
-                        .disabled(!session.player.playback.isPlaying)
+                        .disabled(!session.player.playback.isPlaying())
                 }
                 .buttonStyle(.bordered)
             }

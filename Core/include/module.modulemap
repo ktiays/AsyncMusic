@@ -1,0 +1,5 @@
+module AsyncMusicCore {
+    header "asyncmusic/asyncmusic.hpp"
+    requires cplusplus
+    export *
+}

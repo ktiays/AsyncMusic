@@ -3,6 +3,7 @@
 //  Copyright (c) 2026 ktiays. All rights reserved.
 //
 
+import AsyncMusicCore
 import AVFoundation
 import Observation
 import os
@@ -31,7 +32,7 @@ final class SyncedPlayer {
     /// Reported time from the render timestamp to the sound leaving the device, in seconds.
     private(set) var reportedLatency: Double = 0
     private(set) var ioBufferDuration: Double = 0
-    private(set) var playback = PlaybackState.stopped
+    private(set) var playback = PlaybackState.stopped()
     private(set) var files: [UInt64: MediaFile] = [:]
 
     /// Extra delay on top of the reported latency, in milliseconds. Increase it when this
@@ -49,7 +50,7 @@ final class SyncedPlayer {
 
     /// True when a file is playing that this device has neither locally nor from the leader.
     var isWaitingForAudio: Bool {
-        playback.isPlaying && playback.source != PlaybackSource.metronome
+        playback.isPlaying() && playback.source != PlaybackSource.metronome
             && files[playback.source] == nil && remoteStreamSource != playback.source
     }
 
@@ -57,7 +58,7 @@ final class SyncedPlayer {
     /// a leader can forward it to followers.
     @ObservationIgnored var onOutgoingStream: ((OutgoingStream?) -> Void)?
 
-    var renderStats: RenderStats { renderer.latestStats }
+    var renderStats: RenderStats { renderer.latestStats() }
 
     /// How long the app stays alive in the background with nothing playing.
     let idleReleaseDelay: Duration = .seconds(5 * 60)
@@ -65,7 +66,7 @@ final class SyncedPlayer {
     private(set) var isReleasedForIdle = false
 
     @ObservationIgnored private var engine = AVAudioEngine()
-    @ObservationIgnored private let renderer = SyncedRenderer()
+    @ObservationIgnored private let renderer = SyncedRenderer.create()
     @ObservationIgnored private var sourceNode: AVAudioSourceNode?
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
     @ObservationIgnored private var engineObserver: NSObjectProtocol?
@@ -74,11 +75,11 @@ final class SyncedPlayer {
     @ObservationIgnored private var playbackGeneration = 0
     @ObservationIgnored private var isInBackground = false
     @ObservationIgnored private var idleReleaseTask: Task<Void, Never>?
-    /// Readable from the feeder's queue, which paces decoding on the playing position.
-    @ObservationIgnored private let clockMapLock = OSAllocatedUnfairLock<ClockMap?>(initialState: nil)
+    /// Readable from the feeder's and stream senders' queues, which pace on the heard position.
+    @ObservationIgnored private let position = PlaybackPosition.create()
     @ObservationIgnored private var activeFeeder: FileStreamFeeder?
-    /// Buffers recently swapped out. The render thread holds them unretained and may keep
-    /// using one until its next successful try-lock, so they are released only after a delay.
+    /// Buffers recently swapped out, oldest first. The renderer holds them unretained and may
+    /// keep using one until its next successful try-lock, so they are released after a delay.
     @ObservationIgnored private var retiredBuffers: [StreamBuffer] = []
     @ObservationIgnored private var remoteBuffer: StreamBuffer?
 
@@ -113,11 +114,9 @@ final class SyncedPlayer {
     }
 
     func update(clockMap: ClockMap?) {
-        renderer.update { $0.clockMap = clockMap }
-        let wasUnknown = clockMapLock.withLock { state in
-            defer { state = clockMap }
-            return state == nil
-        }
+        renderer.setClockMap(clockMap)
+        let wasUnknown = !position.hasClockMap()
+        position.setClockMap(clockMap)
         // A file stream can only start once we know where playback is.
         if wasUnknown, clockMap != nil, activeFeeder == nil, files[playback.source] != nil {
             applySource()
@@ -127,8 +126,16 @@ final class SyncedPlayer {
     func update(playback: PlaybackState) {
         // Re-applying the same state would needlessly reposition the read head.
         guard playback != self.playback else { return }
+        let previous = self.playback
         self.playback = playback
-        applySource()
+        position.setPlayback(playback)
+        if let feeder = activeFeeder, canKeepStream(from: previous, to: playback) {
+            // Only the schedule changed (e.g. the leader moved the start once everyone had
+            // buffered): keep decoding into, and streaming from, the same buffer.
+            installSource(.stream(feeder.buffer), reposition: true)
+        } else {
+            applySource()
+        }
         updateIdleRelease()
     }
 
@@ -186,7 +193,7 @@ final class SyncedPlayer {
             let hostTime = stamp.mFlags.contains(.hostTimeValid)
                 ? HostClock.nanoseconds(fromHostTicks: stamp.mHostTime)
                 : nil
-            renderer.render(hostTime: hostTime, frameCount: Int(frameCount), outputRate: sampleRate, left: left, right: right)
+            renderer.render(hostTime != nil, hostTime ?? 0, Int32(frameCount), sampleRate, left, right)
             return noErr
         }
     }
@@ -207,58 +214,79 @@ final class SyncedPlayer {
 
     private func pushPresentationDelay() {
         let delay = Int64(((reportedLatency + manualOffset / 1000) * 1e9).rounded())
-        renderer.update { $0.presentationDelay = delay }
+        renderer.setPresentationDelay(delay)
+    }
+
+    private func canKeepStream(from previous: PlaybackState, to playback: PlaybackState) -> Bool {
+        guard let feeder = activeFeeder, previous.source == playback.source, playback.isPlaying(),
+              let heard = position.heardMediaTime()
+        else { return false }
+        let buffer = feeder.buffer
+        let frame = Int64((Double(max(playback.startMediaTime, heard, 0)) * buffer.sampleRate() / 1e9).rounded(.down))
+        // The decoder only moves forward from where the buffer ends, so the new position must
+        // lie within what the buffer holds or will soon hold.
+        let range = buffer.validRange()
+        return frame >= range.lowerBound && frame <= range.upperBound + Int64(buffer.sampleRate())
     }
 
     private func applySource(reposition: Bool = true) {
         let hadOutgoingStream = activeFeeder != nil
         stopStream()
         let source: RenderSource
-        if !playback.isPlaying {
+        if !playback.isPlaying() {
             source = .silence
         } else if playback.source == PlaybackSource.metronome {
             source = .metronome
         } else if let file = files[playback.source] {
-            source = startStream(for: file).map { .stream(Unmanaged.passUnretained($0)) } ?? .silence
+            source = startStream(for: file).map { .stream($0) } ?? .silence
         } else if let remoteBuffer, remoteStreamSource == playback.source {
-            source = .stream(Unmanaged.passUnretained(remoteBuffer))
+            source = .stream(remoteBuffer)
         } else {
             source = .silence
         }
         if hadOutgoingStream, activeFeeder == nil {
             onOutgoingStream?(nil)
         }
+        installSource(source, reposition: reposition)
+    }
+
+    private func installSource(_ source: RenderSource, reposition: Bool) {
         if reposition {
             playbackGeneration += 1
         }
-        let generation = playbackGeneration
-        let playback = playback
-        renderer.update {
-            $0.playback = playback
-            $0.source = source
-            $0.playbackGeneration = generation
+        switch source {
+        case .silence:
+            renderer.setPlayback(playback, Int32(playbackGeneration), .silence, nil)
+        case .metronome:
+            renderer.setPlayback(playback, Int32(playbackGeneration), .metronome, nil)
+        case let .stream(buffer):
+            renderer.setPlayback(playback, Int32(playbackGeneration), .stream, buffer)
         }
+    }
+
+    private enum RenderSource {
+        case silence
+        case metronome
+        case stream(StreamBuffer)
     }
 
     /// Starts decoding `file` from just before the position being heard now (or from the
     /// scheduled start, if that is still ahead). Returns nil until the clock map is known.
     private func startStream(for file: MediaFile) -> StreamBuffer? {
-        guard let clockMap = clockMapLock.withLock({ $0 }) else { return nil }
-        let playback = playback
+        guard let heardNow = position.heardMediaTime() else { return nil }
         let rate = file.sampleRate
-        let heardNow = playback.mediaTime(atLeaderTime: clockMap.leaderTime(fromLocal: HostClock.now()))
         // A little slack before "now" so a late join loses nothing to the time decoding takes.
         let startTime = max(playback.startMediaTime, heardNow - 100_000_000, 0)
         let startFrame = Int64((Double(startTime) * rate / 1e9).rounded(.down))
 
         // Room for the read-ahead plus a few seconds behind playback, which the writer may
         // overwrite only once they have been heard.
-        let buffer = StreamBuffer(sampleRate: rate, capacity: Int((streamAheadDuration + 4) * rate), startFrame: startFrame)
+        let buffer = StreamBuffer.make(sampleRate: rate, capacity: Int((streamAheadDuration + 4) * rate), startFrame: startFrame)
         var configuration = FileStreamFeeder.Configuration()
         configuration.aheadDuration = streamAheadDuration
-        let clockMapLock = clockMapLock
+        let position = position
         let feeder = FileStreamFeeder(file: file, buffer: buffer, startFrame: startFrame, configuration: configuration) {
-            clockMapLock.withLock { $0 }.map { playback.mediaTime(atLeaderTime: $0.leaderTime(fromLocal: HostClock.now())) }
+            position.heardMediaTime()
         }
         feeder.onStall = { [weak self, weak feeder] in
             DispatchQueue.main.async {
@@ -270,7 +298,7 @@ final class SyncedPlayer {
         }
         activeFeeder = feeder
         feeder.start()
-        onOutgoingStream?(OutgoingStream(id: .random(in: .min ... .max), source: file.id, buffer: buffer, playback: playback))
+        onOutgoingStream?(OutgoingStream(id: .random(in: .min ... .max), source: file.id, buffer: buffer, position: position))
         return buffer
     }
 
@@ -283,9 +311,10 @@ final class SyncedPlayer {
 
     private func retire(_ buffer: StreamBuffer) {
         retiredBuffers.append(buffer)
+        // Every buffer waits the same time, so the oldest one is always the one that is due.
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(2))
-            self?.retiredBuffers.removeAll { $0 === buffer }
+            self?.retiredBuffers.removeFirst()
         }
     }
 
@@ -394,7 +423,7 @@ final class SyncedPlayer {
     private func updateIdleRelease() {
         idleReleaseTask?.cancel()
         idleReleaseTask = nil
-        guard wantsRunning, isInBackground, !playback.isPlaying, !isReleasedForIdle else { return }
+        guard wantsRunning, isInBackground, !playback.isPlaying(), !isReleasedForIdle else { return }
         idleReleaseTask = Task { [weak self, idleReleaseDelay] in
             try? await Task.sleep(for: idleReleaseDelay)
             guard !Task.isCancelled, let self else { return }

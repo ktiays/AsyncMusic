@@ -3,6 +3,7 @@
 //  Copyright (c) 2026 ktiays. All rights reserved.
 //
 
+import AsyncMusicCore
 import Foundation
 import Network
 
@@ -11,7 +12,8 @@ import Network
 ///
 /// The client's queue is the buffer's only writer. Each stream start creates a fresh buffer
 /// (handed to the player through `onStream`), since streams are append-only and a new one
-/// usually starts somewhere else in the file.
+/// usually starts somewhere else in the file. After every chunk the client reports how far
+/// its buffer reaches, which the leader uses to decide when everyone is ready to start.
 nonisolated final class AudioStreamClient: @unchecked Sendable {
     enum State: Sendable, Equatable {
         case connecting
@@ -34,6 +36,8 @@ nonisolated final class AudioStreamClient: @unchecked Sendable {
     private var running = false
     private var streamID: UInt64?
     private var buffer: StreamBuffer?
+    private var codec = AudioStreamCodec.pcm16
+    private var decoder: ALACDecoder?
     private var left: [Float] = []
     private var right: [Float] = []
 
@@ -67,7 +71,7 @@ nonisolated final class AudioStreamClient: @unchecked Sendable {
             switch state {
             case .ready:
                 onStateChange?(.connected)
-                receiveHeader(on: connection)
+                receive(on: connection)
             case let .waiting(error):
                 onStateChange?(.reconnecting("Waiting: \(error.localizedDescription)"))
             case let .failed(error):
@@ -94,65 +98,75 @@ nonisolated final class AudioStreamClient: @unchecked Sendable {
         }
     }
 
-    private func receiveHeader(on connection: NWConnection) {
-        connection.receive(minimumIncompleteLength: AudioStreamMessage.headerLength, maximumLength: AudioStreamMessage.headerLength) { [weak self, weak connection] content, _, isComplete, error in
+    private func receive(on connection: NWConnection) {
+        connection.receiveAudioStreamMessages { [weak self, weak connection] message in
             guard let self, let connection, connection === self.connection else { return }
-            guard let content, let length = AudioStreamMessage.bodyLength(header: content) else {
-                reconnect(reason: error?.localizedDescription ?? (isComplete ? "Leader closed the stream" : "Malformed stream"))
-                return
-            }
-            receiveBody(length: length, on: connection)
+            handle(message, on: connection)
+        } onEnd: { [weak self, weak connection] reason in
+            guard let self, let connection, connection === self.connection else { return }
+            reconnect(reason: reason)
         }
     }
 
-    private func receiveBody(length: Int, on connection: NWConnection) {
-        connection.receive(minimumIncompleteLength: length, maximumLength: length) { [weak self, weak connection] content, _, isComplete, error in
-            guard let self, let connection, connection === self.connection else { return }
-            guard let content, content.count == length else {
-                reconnect(reason: error?.localizedDescription ?? (isComplete ? "Leader closed the stream" : "Truncated message"))
-                return
-            }
-            if let message = AudioStreamMessage(body: content) {
-                handle(message)
-            }
-            receiveHeader(on: connection)
-        }
-    }
-
-    private func handle(_ message: AudioStreamMessage) {
+    private func handle(_ message: AudioStreamMessage, on connection: NWConnection) {
         switch message {
-        case let .streamStart(streamID, source, sampleRate, startFrame):
+        case let .streamStart(streamID, source, sampleRate, startFrame, codec, cookie):
             guard sampleRate > 0 else { return }
-            let buffer = StreamBuffer(sampleRate: sampleRate, capacity: Int(bufferDuration * sampleRate), startFrame: startFrame)
+            if codec == .alac {
+                guard let decoder = ALACDecoder(sampleRate: sampleRate, magicCookie: cookie) else {
+                    onLog?("Cannot decode stream \(String(format: "%016llx", streamID)): ALAC decoder unavailable")
+                    self.streamID = nil
+                    return
+                }
+                self.decoder = decoder
+            } else {
+                decoder = nil
+            }
+            self.codec = codec
+            let buffer = StreamBuffer.make(sampleRate: sampleRate, capacity: Int(bufferDuration * sampleRate), startFrame: startFrame)
             self.streamID = streamID
             self.buffer = buffer
-            onLog?(String(format: "Stream %016llx: %.0f Hz from %.2fs", streamID, sampleRate, Double(startFrame) / sampleRate))
+            onLog?(String(format: "Stream %016llx: %.0f Hz %@ from %.2fs", streamID, sampleRate, codec == .alac ? "ALAC" : "PCM", Double(startFrame) / sampleRate))
             onStream?(source, buffer)
 
-        case let .audio(streamID, startFrame, frameCount, samples):
+        case .bufferReport:
+            break
+
+        case let .audio(streamID, startFrame, frameCount, payload):
             // Chunks still in flight from a previous stream are expected after a switch.
             guard streamID == self.streamID, let buffer else { return }
-            guard startFrame == buffer.endFrame else {
-                onLog?("Stream discontinuity at frame \(startFrame), expected \(buffer.endFrame)")
+            guard startFrame == buffer.endFrame() else {
+                onLog?("Stream discontinuity at frame \(startFrame), expected \(buffer.endFrame())")
                 return
             }
-            if left.count < frameCount {
-                left = [Float](repeating: 0, count: frameCount)
-                right = [Float](repeating: 0, count: frameCount)
-            }
-            samples.withUnsafeBytes { raw in
-                for frame in 0 ..< frameCount {
-                    let l = raw.loadUnaligned(fromByteOffset: frame * 4, as: Int16.self)
-                    let r = raw.loadUnaligned(fromByteOffset: frame * 4 + 2, as: Int16.self)
-                    left[frame] = Float(Int16(littleEndian: l)) / 32768
-                    right[frame] = Float(Int16(littleEndian: r)) / 32768
+            switch codec {
+            case .alac:
+                guard let decoder, decoder.decode(payload, frameCount: frameCount) == frameCount else {
+                    onLog?("Could not decode chunk at frame \(startFrame)")
+                    return
+                }
+                buffer.append(left: decoder.left, right: decoder.right, count: frameCount)
+            case .pcm16:
+                if left.count < frameCount {
+                    left = [Float](repeating: 0, count: frameCount)
+                    right = [Float](repeating: 0, count: frameCount)
+                }
+                let decoded = payload.withUnsafeBytes { raw in
+                    left.withUnsafeMutableBufferPointer { l in
+                        right.withUnsafeMutableBufferPointer { r in
+                            asyncmusic.decodePCM16(raw.bindMemory(to: UInt8.self).baseAddress!, raw.count, Int32(frameCount), l.baseAddress!, r.baseAddress!)
+                        }
+                    }
+                }
+                guard decoded else { return }
+                left.withUnsafeBufferPointer { l in
+                    right.withUnsafeBufferPointer { r in
+                        buffer.append(left: l.baseAddress!, right: r.baseAddress!, count: frameCount)
+                    }
                 }
             }
-            left.withUnsafeBufferPointer { l in
-                right.withUnsafeBufferPointer { r in
-                    buffer.append(left: l.baseAddress!, right: r.baseAddress!, count: frameCount)
-                }
-            }
+            let report = AudioStreamMessage.bufferReport(streamID: streamID, endFrame: buffer.endFrame())
+            connection.send(content: report.framed(), completion: .idempotent)
         }
     }
 }

@@ -3,6 +3,7 @@
 //  Copyright (c) 2026 ktiays. All rights reserved.
 //
 
+import AsyncMusicCore
 import Foundation
 import Network
 import Observation
@@ -44,9 +45,13 @@ final class ClockSyncSession {
     /// command to reach followers plus the largest output latency in the group (Bluetooth can
     /// be 200+ ms). Followers that hear about a start late just join mid-stream.
     let startLeadTime: Int64 = 1_000_000_000
-    /// Files additionally need their first seconds streamed to every follower before they
-    /// start, so they get a longer lead, much like AirPlay's startup delay.
-    let fileStartLeadTime: Int64 = 2_000_000_000
+    /// Files are first streamed to every follower; playback starts once each has
+    /// `startBufferDuration` buffered (adaptive start), but waits at most this long.
+    let maximumStartWait = 3.0
+    let startBufferDuration = 0.5
+    /// Once everyone is ready, the start is scheduled this far ahead, covering the play
+    /// command's trip to followers and their output latency.
+    let startMargin: Int64 = 500_000_000
 
     private(set) var isLoadingTrack = false
     /// The file the leader plays with "Play file".
@@ -69,7 +74,7 @@ final class ClockSyncSession {
     /// The current mapping to the leader's clock; identity when leading.
     var clockMap: ClockMap? {
         switch role {
-        case .leader: .identity
+        case .leader: .identity()
         case .follower: latestRound?.map
         case .off: nil
         }
@@ -81,6 +86,11 @@ final class ClockSyncSession {
     private var leader: ClockSyncLeader?
     private var follower: ClockSyncFollower?
     private var audioServer: AudioStreamServer?
+    /// The stream the leader is currently sending, as reported by the player.
+    private var outgoingStream: OutgoingStream?
+    /// Identifies the play request whose adaptive start is pending, so a newer request or a
+    /// stop cancels it.
+    private var pendingStart: UUID?
     private var audioClient: AudioStreamClient?
     private var browser: NWBrowser?
 
@@ -98,7 +108,7 @@ final class ClockSyncSession {
         case .off:
             status = "Idle"
         case .leader:
-            player.update(clockMap: .identity)
+            player.update(clockMap: .identity())
             startLeading()
         case .follower:
             startBrowsing()
@@ -110,7 +120,7 @@ final class ClockSyncSession {
         rounds = []
         latestRound = nil
         player.update(clockMap: nil)
-        player.update(playback: .stopped)
+        player.update(playback: .stopped())
         connectedLeader = discovered.name
         append("Following \(discovered.name)")
 
@@ -159,23 +169,60 @@ final class ClockSyncSession {
 
     // MARK: - Playback
 
-    /// Leader only: starts `source` from the top on every device, after `startLeadTime` (or
-    /// `fileStartLeadTime` for files, which have to be streamed first).
+    /// Leader only: starts `source` from the top on every device. The metronome starts after
+    /// `startLeadTime`; files start as soon as every follower has buffered enough.
     func play(source: UInt64) {
         guard role == .leader, let leader else { return }
-        let leadTime = source == PlaybackSource.metronome ? startLeadTime : fileStartLeadTime
-        let state = PlaybackState(source: source, startLeaderTime: HostClock.now() + leadTime, startMediaTime: 0)
-        // Update the local player first: that starts decoding, which is what gets streamed.
-        player.update(playback: state)
-        leader.setPlayback(state)
-        append("Play \(describe(source)) in \(Double(leadTime) / 1e9)s")
+        pendingStart = nil
+        guard source != PlaybackSource.metronome else {
+            let state = PlaybackState(source: source, startLeaderTime: HostClock.now() + startLeadTime, startMediaTime: 0)
+            player.update(playback: state)
+            leader.setPlayback(state)
+            append("Play \(describe(source)) in \(Double(startLeadTime) / 1e9)s")
+            return
+        }
+
+        // Start decoding (and with it streaming) right away, provisionally scheduled after the
+        // longest wait. Followers buffer the stream without being told to play yet.
+        let requested = HostClock.now()
+        let provisional = PlaybackState(
+            source: source,
+            startLeaderTime: requested + Int64(maximumStartWait * 1e9) + startMargin,
+            startMediaTime: 0
+        )
+        player.update(playback: provisional)
+        guard let stream = outgoingStream, stream.source == source, let audioServer else {
+            leader.setPlayback(provisional)
+            return
+        }
+        let token = UUID()
+        pendingStart = token
+        append("Buffering \(describe(source)) on followers…")
+
+        let threshold = stream.buffer.validRange().lowerBound + Int64(startBufferDuration * stream.buffer.sampleRate())
+        audioServer.waitUntilBuffered(stream: stream.id, through: threshold, timeout: maximumStartWait) { [weak self] readiness in
+            DispatchQueue.main.async {
+                guard let self, self.pendingStart == token, let leader = self.leader else { return }
+                self.pendingStart = nil
+                let state = PlaybackState(source: source, startLeaderTime: HostClock.now() + self.startMargin, startMediaTime: 0)
+                self.player.update(playback: state)
+                leader.setPlayback(state)
+                let total = Double(state.startLeaderTime - requested) / 1e9
+                var line = String(format: "Play %@: %d/%d followers ready, starts %.2fs after request", self.describe(source), readiness.ready, readiness.total, total)
+                if readiness.timedOut {
+                    line += " (gave up waiting)"
+                }
+                self.append(line)
+            }
+        }
     }
 
     /// Leader only: stops playback on every device.
     func stopPlayback() {
         guard role == .leader, let leader else { return }
-        leader.setPlayback(.stopped)
-        player.update(playback: .stopped)
+        pendingStart = nil
+        leader.setPlayback(.stopped())
+        player.update(playback: .stopped())
         append("Stop")
     }
 
@@ -209,7 +256,7 @@ final class ClockSyncSession {
     private func applyRemotePlayback(_ state: PlaybackState) {
         guard role == .follower else { return }
         player.update(playback: state)
-        if state.isPlaying {
+        if state.isPlaying() {
             let inSeconds = Double(state.startLeaderTime - (clockMap?.leaderTime(fromLocal: HostClock.now()) ?? state.startLeaderTime)) / 1e9
             append(String(format: "Leader plays %@ (start in %.3fs)", describe(state.source), inSeconds))
         } else {
@@ -227,7 +274,7 @@ final class ClockSyncSession {
         leader.onPlaybackReset = { [weak self] in
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.player.update(playback: .stopped)
+                self.player.update(playback: .stopped())
                 self.append("This device slept; playback stopped and followers will resync")
             }
         }
@@ -251,8 +298,9 @@ final class ClockSyncSession {
         server.onError = { [weak self] message in
             DispatchQueue.main.async { self?.append("Audio stream error: \(message)") }
         }
-        player.onOutgoingStream = { [weak server] stream in
+        player.onOutgoingStream = { [weak self, weak server] stream in
             server?.setStream(stream)
+            self?.outgoingStream = stream
         }
         audioServer = server
         server.start()
@@ -340,11 +388,11 @@ final class ClockSyncSession {
             rounds.removeFirst(rounds.count - historyLimit)
         }
 
-        let rtt = round.best.map { String(format: "rtt %.2fms", Double($0.roundTrip) / 1e6) } ?? "no replies"
-        var line = "#\(round.index) \(round.probesReceived)/\(round.probesSent) \(rtt) \(round.verdict)"
+        let rtt = round.best.map { String(format: "rtt %.2fms", Double($0.roundTrip()) / 1e6) } ?? "no replies"
+        var line = "#\(round.index) \(round.probesReceived)/\(round.probesSent) \(rtt) \(round.verdict.name)"
         if let map = round.map {
             let offset = Double(map.offset(atLocal: round.localTime)) / 1e6
-            line += String(format: " offset %.3fms skew %+.2fppm", offset, map.skewPPM)
+            line += String(format: " offset %.3fms skew %+.2fppm", offset, map.skewPPM())
         }
         if let residual = round.residual {
             line += String(format: " res %+.0fµs", Double(residual) / 1e3)
@@ -355,9 +403,11 @@ final class ClockSyncSession {
     // MARK: - Helpers
 
     private func tearDown() {
-        player.update(playback: .stopped)
+        player.update(playback: .stopped())
         player.update(clockMap: nil)
         player.onOutgoingStream = nil
+        outgoingStream = nil
+        pendingStart = nil
         audioServer?.stop()
         audioServer = nil
         audioClient?.stop()

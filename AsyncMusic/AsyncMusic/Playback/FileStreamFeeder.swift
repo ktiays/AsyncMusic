@@ -3,6 +3,7 @@
 //  Copyright (c) 2026 ktiays. All rights reserved.
 //
 
+import AsyncMusicCore
 import AVFoundation
 import os
 
@@ -100,20 +101,20 @@ nonisolated final class FileStreamFeeder: @unchecked Sendable {
     /// Decodes until the buffer reaches `aheadDuration` past the playing position.
     func fill() {
         guard !finished, let audioFile, let chunk else { return }
-        let rate = buffer.sampleRate
+        let rate = buffer.sampleRate()
         let playingFrame = currentMediaTime().map { Int64((Double($0) * rate / 1e9).rounded(.down)) }
         // Until the position is known, just prebuffer from the start.
         let target = (playingFrame ?? startFrame) + Int64(configuration.aheadDuration * rate)
 
-        if let playingFrame, playingFrame - buffer.endFrame > Int64(configuration.stallThreshold * rate),
-           buffer.endFrame < file.frameCount, !stalled {
+        if let playingFrame, playingFrame - buffer.endFrame() > Int64(configuration.stallThreshold * rate),
+           buffer.endFrame() < file.frameCount, !stalled {
             stalled = true
             Self.logger.info("File stream fell behind playback; requesting a restart")
             onStall?()
             return
         }
 
-        while buffer.endFrame < target {
+        while buffer.endFrame() < target {
             chunk.frameLength = 0
             do {
                 try audioFile.read(into: chunk, frameCount: configuration.chunkFrames)
