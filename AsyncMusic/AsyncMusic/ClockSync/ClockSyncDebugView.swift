@@ -147,24 +147,25 @@ struct ClockSyncDebugView: View {
     private var playbackSection: some View {
         Section("Playback") {
             LabeledContent("Now", value: session.player.playback.isPlaying ? session.describe(session.player.playback.source) : "Stopped")
-            if session.player.isMissingSource {
-                Label("This file isn’t loaded on this device. Load the same file to play along.", systemImage: "exclamationmark.triangle")
-                    .foregroundStyle(.orange)
+            if session.player.isWaitingForAudio {
+                Label("Waiting for audio from the leader…", systemImage: "hourglass")
+                    .foregroundStyle(.secondary)
             }
 
-            HStack {
-                Text(session.selectedTrack?.name ?? "No file loaded")
-                    .foregroundStyle(session.selectedTrack == nil ? .secondary : .primary)
-                Spacer()
-                if session.isLoadingTrack {
-                    ProgressView()
-                        .controlSize(.small)
-                }
-                Button("Load File…") { isImportingFile = true }
-                    .disabled(session.isLoadingTrack)
-            }
-
+            // Followers get files streamed from the leader; only the leader needs one.
             if session.role == .leader {
+                HStack {
+                    Text(session.selectedTrack?.name ?? "No file loaded")
+                        .foregroundStyle(session.selectedTrack == nil ? .secondary : .primary)
+                    Spacer()
+                    if session.isLoadingTrack {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                    Button("Load File…") { isImportingFile = true }
+                        .disabled(session.isLoadingTrack)
+                }
+
                 HStack {
                     Button("Metronome") { session.play(source: PlaybackSource.metronome) }
                     Button("Play File") {
@@ -239,6 +240,7 @@ private struct RenderStatsView: View {
             LabeledContent("Schedule error", value: stats.isPlaying ? String(format: "%+.0f µs", stats.errorMicroseconds) : "–")
             LabeledContent("Rate correction", value: String(format: "%+.1f ppm", stats.correctionPPM))
             LabeledContent("Repositions", value: "\(stats.jumps)")
+            LabeledContent("Stream gaps", value: "\(stats.gaps)")
             if stats.isPlaying, stats.bufferedSeconds > 0 {
                 LabeledContent("Buffered ahead", value: String(format: "%.1f s", stats.bufferedSeconds))
             }

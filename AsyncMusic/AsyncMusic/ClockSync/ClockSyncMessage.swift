@@ -10,6 +10,7 @@ import Foundation
 ///     ping: magic(2) version(1) type(1) sequence(4) t0(8)
 ///     pong: magic(2) version(1) type(1) sequence(4) session(8) t0(8) t1(8) t2(8)
 ///     playback: magic(2) version(1) type(1) revision(4) session(8) source(8) startLeaderTime(8) startMediaTime(8)
+///     audioPort: magic(2) version(1) type(1) unused(4) session(8) port(2)
 nonisolated enum ClockSyncMessage: Sendable, Equatable {
     case ping(sequence: UInt32, t0: Int64)
     /// `session` identifies one run of the leader; a new value means its timeline changed.
@@ -17,12 +18,16 @@ nonisolated enum ClockSyncMessage: Sendable, Equatable {
     /// Sent by the leader whenever playback changes and repeated periodically, since UDP may
     /// drop it. `revision` increases with every change within one leader session.
     case playback(revision: UInt32, session: UInt64, state: PlaybackState)
+    /// The TCP port of the leader's audio stream, on the same host as the clock service.
+    /// Sent with the playback state, so followers need no second Bonjour lookup.
+    case audioPort(session: UInt64, port: UInt16)
 
     private static let magic: UInt16 = 0x4153  // "AS"
     private static let version: UInt8 = 1
     private static let pingType: UInt8 = 1
     private static let pongType: UInt8 = 2
     private static let playbackType: UInt8 = 3
+    private static let audioPortType: UInt8 = 4
 
     func encoded() -> Data {
         var data = Data(capacity: 48)
@@ -47,6 +52,11 @@ nonisolated enum ClockSyncMessage: Sendable, Equatable {
             data.append(littleEndian: state.source)
             data.append(littleEndian: state.startLeaderTime)
             data.append(littleEndian: state.startMediaTime)
+        case let .audioPort(session, port):
+            data.append(littleEndian: Self.audioPortType)
+            data.append(littleEndian: UInt32(0))
+            data.append(littleEndian: session)
+            data.append(littleEndian: port)
         }
         return data
     }
@@ -78,6 +88,11 @@ nonisolated enum ClockSyncMessage: Sendable, Equatable {
             else { return nil }
             let state = PlaybackState(source: source, startLeaderTime: startLeaderTime, startMediaTime: startMediaTime)
             self = .playback(revision: sequence, session: session, state: state)
+        case Self.audioPortType:
+            guard let session = reader.read(UInt64.self),
+                  let port = reader.read(UInt16.self)
+            else { return nil }
+            self = .audioPort(session: session, port: port)
         default:
             return nil
         }

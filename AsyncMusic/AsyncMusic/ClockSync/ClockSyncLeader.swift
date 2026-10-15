@@ -59,6 +59,7 @@ nonisolated final class ClockSyncLeader: @unchecked Sendable {
     private var lastSleepDuration = HostClock.sleepDuration()
     private var playback = PlaybackState.stopped
     private var playbackRevision: UInt32 = 0
+    private var audioPort: UInt16?
     private var rebroadcastTimer: DispatchSourceTimer?
 
     init(name: String) {
@@ -156,15 +157,27 @@ nonisolated final class ClockSyncLeader: @unchecked Sendable {
         }
     }
 
+    /// Tells followers where to connect for the audio stream (nil: not available).
+    func setAudioPort(_ port: UInt16?) {
+        queue.async { [self] in
+            audioPort = port
+            broadcastPlayback()
+        }
+    }
+
     private func broadcastPlayback() {
         for connection in connections.values {
             sendPlayback(on: connection)
         }
     }
 
+    /// Sends the playback state, and the audio stream's port along with it.
     private func sendPlayback(on connection: NWConnection) {
         let message = ClockSyncMessage.playback(revision: playbackRevision, session: session, state: playback)
         connection.send(content: message.encoded(), completion: .idempotent)
+        if let audioPort {
+            connection.send(content: ClockSyncMessage.audioPort(session: session, port: audioPort).encoded(), completion: .idempotent)
+        }
     }
 
     private func listenerStateChanged(_ state: NWListener.State) {

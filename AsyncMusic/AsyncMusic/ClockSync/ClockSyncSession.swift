@@ -44,6 +44,9 @@ final class ClockSyncSession {
     /// command to reach followers plus the largest output latency in the group (Bluetooth can
     /// be 200+ ms). Followers that hear about a start late just join mid-stream.
     let startLeadTime: Int64 = 1_000_000_000
+    /// Files additionally need their first seconds streamed to every follower before they
+    /// start, so they get a longer lead, much like AirPlay's startup delay.
+    let fileStartLeadTime: Int64 = 2_000_000_000
 
     private(set) var isLoadingTrack = false
     /// The file the leader plays with "Play file".
@@ -77,6 +80,8 @@ final class ClockSyncSession {
 
     private var leader: ClockSyncLeader?
     private var follower: ClockSyncFollower?
+    private var audioServer: AudioStreamServer?
+    private var audioClient: AudioStreamClient?
     private var browser: NWBrowser?
 
     func setRole(_ newRole: Role) {
@@ -119,8 +124,33 @@ final class ClockSyncSession {
         follower.onPlayback = { [weak self] state in
             DispatchQueue.main.async { self?.applyRemotePlayback(state) }
         }
+        follower.onAudioEndpoint = { [weak self] endpoint in
+            DispatchQueue.main.async { self?.connectAudioStream(to: endpoint) }
+        }
         self.follower = follower
         follower.start()
+
+        audioClient?.stop()
+        audioClient = nil
+    }
+
+    /// (Re)connects the audio stream once the clock connection learned where it is.
+    private func connectAudioStream(to endpoint: NWEndpoint) {
+        guard role == .follower else { return }
+        audioClient?.stop()
+        append("Audio stream at \(endpoint)")
+        let client = AudioStreamClient(endpoint: endpoint)
+        client.onStateChange = { [weak self] state in
+            DispatchQueue.main.async { self?.audioClientStateChanged(state) }
+        }
+        client.onStream = { [weak self] source, buffer in
+            DispatchQueue.main.async { self?.player.setRemoteStream(buffer, source: source) }
+        }
+        client.onLog = { [weak self] text in
+            DispatchQueue.main.async { self?.append(text) }
+        }
+        audioClient = client
+        client.start()
     }
 
     func clearLog() {
@@ -129,13 +159,16 @@ final class ClockSyncSession {
 
     // MARK: - Playback
 
-    /// Leader only: starts `source` from the top, `startLeadTime` from now, on every device.
+    /// Leader only: starts `source` from the top on every device, after `startLeadTime` (or
+    /// `fileStartLeadTime` for files, which have to be streamed first).
     func play(source: UInt64) {
         guard role == .leader, let leader else { return }
-        let state = PlaybackState(source: source, startLeaderTime: HostClock.now() + startLeadTime, startMediaTime: 0)
-        leader.setPlayback(state)
+        let leadTime = source == PlaybackSource.metronome ? startLeadTime : fileStartLeadTime
+        let state = PlaybackState(source: source, startLeaderTime: HostClock.now() + leadTime, startMediaTime: 0)
+        // Update the local player first: that starts decoding, which is what gets streamed.
         player.update(playback: state)
-        append("Play \(describe(source)) in \(Double(startLeadTime) / 1e9)s")
+        leader.setPlayback(state)
+        append("Play \(describe(source)) in \(Double(leadTime) / 1e9)s")
     }
 
     /// Leader only: stops playback on every device.
@@ -169,7 +202,7 @@ final class ClockSyncSession {
         switch source {
         case PlaybackSource.none: "nothing"
         case PlaybackSource.metronome: "metronome"
-        default: player.files[source].map { "“\($0.name)”" } ?? String(format: "unknown file %016llx", source)
+        default: player.files[source].map { "“\($0.name)”" } ?? String(format: "streamed file %016llx", source)
         }
     }
 
@@ -207,6 +240,22 @@ final class ClockSyncSession {
         }
         self.leader = leader
         leader.start()
+
+        let server = AudioStreamServer()
+        server.onPortChange = { [weak leader] port in
+            leader?.setAudioPort(port)
+        }
+        server.onReceiversChange = { [weak self] count in
+            DispatchQueue.main.async { self?.append("Audio stream receivers: \(count)") }
+        }
+        server.onError = { [weak self] message in
+            DispatchQueue.main.async { self?.append("Audio stream error: \(message)") }
+        }
+        player.onOutgoingStream = { [weak server] stream in
+            server?.setStream(stream)
+        }
+        audioServer = server
+        server.start()
     }
 
     private func leaderStateChanged(_ state: ClockSyncLeader.State) {
@@ -254,6 +303,17 @@ final class ClockSyncSession {
         }
     }
 
+    private func audioClientStateChanged(_ state: AudioStreamClient.State) {
+        switch state {
+        case .connected:
+            append("Audio stream connected")
+        case let .reconnecting(reason):
+            append("Audio stream reconnecting: \(reason)")
+        case .connecting, .stopped:
+            break
+        }
+    }
+
     private func followerStateChanged(_ state: ClockSyncFollower.State) {
         switch state {
         case .connecting:
@@ -297,6 +357,11 @@ final class ClockSyncSession {
     private func tearDown() {
         player.update(playback: .stopped)
         player.update(clockMap: nil)
+        player.onOutgoingStream = nil
+        audioServer?.stop()
+        audioServer = nil
+        audioClient?.stop()
+        audioClient = nil
         leader?.stop()
         leader = nil
         follower?.stop()

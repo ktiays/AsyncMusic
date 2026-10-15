@@ -29,6 +29,8 @@ nonisolated struct RenderStats: Sendable {
     var mediaSeconds: Double = 0
     /// How far the stream buffer reaches beyond the current position, in seconds.
     var bufferedSeconds: Double = 0
+    /// Times stream data ran out mid-playback (including once at the end of a file).
+    var gaps = 0
 }
 
 /// Works out, for every render cycle, which part of the source must be heard when that buffer
@@ -79,6 +81,8 @@ nonisolated final class SyncedRenderer: @unchecked Sendable {
     private var lastGeneration = -1
     private var wasAudible = false
     private var fadeRemaining = 0
+    /// True while the stream has no data for the playing position (but should have).
+    private var inStreamGap = false
     /// Integral term of the rate controller: the learned steady-state rate error.
     private var integral = 0.0
     private var stats = RenderStats()
@@ -146,6 +150,7 @@ nonisolated final class SyncedRenderer: @unchecked Sendable {
             }
             lastGeneration = current.playbackGeneration
             position = target
+            inStreamGap = false
         } else {
             let limit = configuration.maximumCorrection
             let errorSeconds = error / sourceRate
@@ -170,6 +175,16 @@ nonisolated final class SyncedRenderer: @unchecked Sendable {
         case let .stream(buffer):
             buffer._withUnsafeGuaranteedRef { buffer in
                 let range = buffer.validRange()
+                // Interpolation reads up to two frames past the position.
+                let lastReadable = Double(range.upperBound) - 3
+                let hasData = Double(range.lowerBound) <= position && position <= lastReadable
+                if hasData, inStreamGap {
+                    // Data is back (or arrived for a late join): fade in rather than click.
+                    inStreamGap = false
+                    fadeRemaining = Int(configuration.fadeDuration * outputRate)
+                } else if !hasData, position >= 0, !inStreamGap {
+                    inStreamGap = true
+                }
                 for frame in 0 ..< frameCount {
                     let (l, r) = Self.interpolate(buffer, range: range, at: position + Double(frame) * increment)
                     left[frame] = l
@@ -181,6 +196,21 @@ nonisolated final class SyncedRenderer: @unchecked Sendable {
                 if !buffer.isStillValid(from: oldestRead) {
                     left.update(repeating: 0, count: frameCount)
                     right.update(repeating: 0, count: frameCount)
+                }
+                // Data runs out within this cycle: fade out up to that point instead of cutting.
+                let endPosition = position + Double(frameCount - 1) * increment
+                if hasData, endPosition > lastReadable {
+                    let cut = min(frameCount, max(0, Int(((lastReadable - position) / increment).rounded(.down)) + 1))
+                    let fadeLength = min(cut, Int(configuration.fadeDuration * outputRate))
+                    for frame in (cut - fadeLength) ..< cut {
+                        let gain = Float(cut - frame) / Float(fadeLength + 1)
+                        left[frame] *= gain
+                        right[frame] *= gain
+                    }
+                    left.advanced(by: cut).update(repeating: 0, count: frameCount - cut)
+                    right.advanced(by: cut).update(repeating: 0, count: frameCount - cut)
+                    inStreamGap = true
+                    stats.gaps += 1
                 }
                 stats.bufferedSeconds = max(0, Double(range.upperBound) - position) / sourceRate
             }

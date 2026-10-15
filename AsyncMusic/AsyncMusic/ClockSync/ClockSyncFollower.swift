@@ -67,6 +67,9 @@ nonisolated final class ClockSyncFollower: @unchecked Sendable {
     var onRound: (@Sendable (ClockSyncRound) -> Void)?
     /// Called when the leader's playback state changes (not for its periodic repeats).
     var onPlayback: (@Sendable (PlaybackState) -> Void)?
+    /// Called when the leader's audio stream endpoint becomes known or changes: the address
+    /// this connection reached, with the port the leader announced.
+    var onAudioEndpoint: (@Sendable (NWEndpoint) -> Void)?
 
     private let queue = DispatchQueue(label: "me.ktiays.AsyncMusic.clock-sync.follower", qos: .userInteractive)
     private let endpoint: NWEndpoint
@@ -83,6 +86,7 @@ nonisolated final class ClockSyncFollower: @unchecked Sendable {
     private var leaderSession: UInt64?
     private var playbackRevision: (session: UInt64, revision: UInt32)?
     private var lastSleepDuration = HostClock.sleepDuration()
+    private var audioEndpoint: NWEndpoint?
 
     init(endpoint: NWEndpoint, configuration: Configuration = Configuration()) {
         self.configuration = configuration
@@ -236,6 +240,8 @@ nonisolated final class ClockSyncFollower: @unchecked Sendable {
                 handlePong(sequence: sequence, session: session, probe: ClockProbe(t0: t0, t1: t1, t2: t2, t3: t3))
             case let .playback(revision, session, state):
                 handlePlayback(revision: revision, session: session, state: state)
+            case let .audioPort(_, port):
+                handleAudioPort(port, connection: connection)
             case .ping, nil:
                 break
             }
@@ -243,6 +249,16 @@ nonisolated final class ClockSyncFollower: @unchecked Sendable {
                 receive(on: connection)
             }
         }
+    }
+
+    private func handleAudioPort(_ port: UInt16, connection: NWConnection) {
+        guard case let .hostPort(host, _)? = connection.currentPath?.remoteEndpoint,
+              let port = NWEndpoint.Port(rawValue: port)
+        else { return }
+        let endpoint = NWEndpoint.hostPort(host: host, port: port)
+        guard endpoint != audioEndpoint else { return }
+        audioEndpoint = endpoint
+        onAudioEndpoint?(endpoint)
     }
 
     private func handlePlayback(revision: UInt32, session: UInt64, state: PlaybackState) {
