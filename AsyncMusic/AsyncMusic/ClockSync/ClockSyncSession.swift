@@ -1,0 +1,330 @@
+//
+//  Created by ktiays on 2026/10/15.
+//  Copyright (c) 2026 ktiays. All rights reserved.
+//
+
+import Foundation
+import Network
+import Observation
+import os
+#if canImport(UIKit)
+import UIKit
+#endif
+
+/// Drives clock sync and synced playback for the UI: either leads (advertises its clock and
+/// decides what plays) or follows a discovered leader, and keeps a short history of rounds for
+/// the debug view.
+@Observable
+final class ClockSyncSession {
+    enum Role: String, CaseIterable, Identifiable {
+        case off = "Off"
+        case leader = "Leader"
+        case follower = "Follower"
+
+        var id: Self { self }
+    }
+
+    struct DiscoveredLeader: Identifiable, Hashable {
+        var name: String
+        var endpoint: NWEndpoint
+
+        var id: String { name }
+    }
+
+    struct LogLine: Identifiable {
+        let id = UUID()
+        var date: Date
+        var text: String
+    }
+
+    let deviceName = ClockSyncSession.makeDeviceName()
+    let player = SyncedPlayer()
+
+    /// How far ahead the leader schedules a start. Must comfortably exceed the time for the
+    /// command to reach followers plus the largest output latency in the group (Bluetooth can
+    /// be 200+ ms). Followers that hear about a start late just join mid-stream.
+    let startLeadTime: Int64 = 1_000_000_000
+
+    private(set) var isLoadingTrack = false
+    /// The file the leader plays with "Play file".
+    private(set) var selectedTrack: PCMTrack?
+
+    private(set) var role: Role = .off
+    private(set) var status = "Idle"
+
+    // Leader
+    private(set) var followerCount = 0
+
+    // Follower
+    private(set) var discoveredLeaders: [DiscoveredLeader] = []
+    private(set) var connectedLeader: String?
+    private(set) var latestRound: ClockSyncRound?
+    private(set) var rounds: [ClockSyncRound] = []
+
+    private(set) var log: [LogLine] = []
+
+    /// The current mapping to the leader's clock; identity when leading.
+    var clockMap: ClockMap? {
+        switch role {
+        case .leader: .identity
+        case .follower: latestRound?.map
+        case .off: nil
+        }
+    }
+
+    private let historyLimit = 300
+    private let logLimit = 200
+
+    private var leader: ClockSyncLeader?
+    private var follower: ClockSyncFollower?
+    private var browser: NWBrowser?
+
+    func setRole(_ newRole: Role) {
+        guard newRole != role else { return }
+        tearDown()
+        role = newRole
+        if newRole == .off {
+            // Let the app be suspended in the background when it isn't part of a group.
+            player.stop()
+        } else {
+            player.start()
+        }
+        switch newRole {
+        case .off:
+            status = "Idle"
+        case .leader:
+            player.update(clockMap: .identity)
+            startLeading()
+        case .follower:
+            startBrowsing()
+        }
+    }
+
+    func follow(_ discovered: DiscoveredLeader) {
+        follower?.stop()
+        rounds = []
+        latestRound = nil
+        player.update(clockMap: nil)
+        player.update(playback: .stopped)
+        connectedLeader = discovered.name
+        append("Following \(discovered.name)")
+
+        let follower = ClockSyncFollower(endpoint: discovered.endpoint)
+        follower.onStateChange = { [weak self] state in
+            DispatchQueue.main.async { self?.followerStateChanged(state) }
+        }
+        follower.onRound = { [weak self] round in
+            DispatchQueue.main.async { self?.record(round) }
+        }
+        follower.onPlayback = { [weak self] state in
+            DispatchQueue.main.async { self?.applyRemotePlayback(state) }
+        }
+        self.follower = follower
+        follower.start()
+    }
+
+    func clearLog() {
+        log = []
+    }
+
+    // MARK: - Playback
+
+    /// Leader only: starts `source` from the top, `startLeadTime` from now, on every device.
+    func play(source: UInt64) {
+        guard role == .leader, let leader else { return }
+        let state = PlaybackState(source: source, startLeaderTime: HostClock.now() + startLeadTime, startMediaTime: 0)
+        leader.setPlayback(state)
+        player.update(playback: state)
+        append("Play \(describe(source)) in \(Double(startLeadTime) / 1e9)s")
+    }
+
+    /// Leader only: stops playback on every device.
+    func stopPlayback() {
+        guard role == .leader, let leader else { return }
+        leader.setPlayback(.stopped)
+        player.update(playback: .stopped)
+        append("Stop")
+    }
+
+    /// Decodes a file and makes it available for playback. Followers must load the same file
+    /// to play along; it is matched by content, not name.
+    func loadTrack(from url: URL) {
+        isLoadingTrack = true
+        Task {
+            defer { isLoadingTrack = false }
+            do {
+                let track = try await Task.detached(priority: .userInitiated) {
+                    try PCMTrack.load(contentsOf: url)
+                }.value
+                player.add(track)
+                selectedTrack = track
+                append(String(format: "Loaded “%@” (%.1fs, id %016llx)", track.name, track.duration, track.id))
+            } catch {
+                append("Load failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    func describe(_ source: UInt64) -> String {
+        switch source {
+        case PlaybackSource.none: "nothing"
+        case PlaybackSource.metronome: "metronome"
+        default: player.tracks[source].map { "“\($0.name)”" } ?? String(format: "unknown file %016llx", source)
+        }
+    }
+
+    private func applyRemotePlayback(_ state: PlaybackState) {
+        guard role == .follower else { return }
+        player.update(playback: state)
+        if state.isPlaying {
+            let inSeconds = Double(state.startLeaderTime - (clockMap?.leaderTime(fromLocal: HostClock.now()) ?? state.startLeaderTime)) / 1e9
+            append(String(format: "Leader plays %@ (start in %.3fs)", describe(state.source), inSeconds))
+        } else {
+            append("Leader stopped")
+        }
+    }
+
+    // MARK: - Leader
+
+    private func startLeading() {
+        let leader = ClockSyncLeader(name: deviceName)
+        leader.onStateChange = { [weak self] state in
+            DispatchQueue.main.async { self?.leaderStateChanged(state) }
+        }
+        leader.onPlaybackReset = { [weak self] in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.player.update(playback: .stopped)
+                self.append("This device slept; playback stopped and followers will resync")
+            }
+        }
+        leader.onFollowersChange = { [weak self] count in
+            DispatchQueue.main.async {
+                guard let self, count != self.followerCount else { return }
+                self.followerCount = count
+                self.append("Followers: \(count)")
+            }
+        }
+        self.leader = leader
+        leader.start()
+    }
+
+    private func leaderStateChanged(_ state: ClockSyncLeader.State) {
+        switch state {
+        case .starting:
+            status = "Starting listener…"
+        case let .advertising(port):
+            status = "Advertising as “\(deviceName)”"
+            append("Advertising on UDP port \(port)")
+        case let .failed(message):
+            status = "Failed: \(message)"
+            append("Leader error: \(message)")
+        case .stopped:
+            break
+        }
+    }
+
+    // MARK: - Follower
+
+    private func startBrowsing() {
+        status = "Looking for leaders…"
+        let browser = NWBrowser(for: .bonjour(type: ClockSyncNetwork.serviceType, domain: nil), using: ClockSyncNetwork.parameters())
+        browser.browseResultsChangedHandler = { [weak self] results, _ in
+            let leaders = results.compactMap { result -> DiscoveredLeader? in
+                guard case let .service(name, _, _, _) = result.endpoint else { return nil }
+                return DiscoveredLeader(name: name, endpoint: result.endpoint)
+            }
+            DispatchQueue.main.async { self?.updateDiscovered(leaders) }
+        }
+        browser.stateUpdateHandler = { [weak self] state in
+            guard case let .failed(error) = state else { return }
+            DispatchQueue.main.async {
+                self?.status = "Browse failed: \(error.localizedDescription)"
+                self?.append("Browse failed: \(error.localizedDescription)")
+            }
+        }
+        self.browser = browser
+        browser.start(queue: .main)
+    }
+
+    private func updateDiscovered(_ leaders: [DiscoveredLeader]) {
+        discoveredLeaders = leaders.sorted { $0.name < $1.name }
+        if connectedLeader == nil {
+            status = leaders.isEmpty ? "Looking for leaders…" : "Pick a leader"
+        }
+    }
+
+    private func followerStateChanged(_ state: ClockSyncFollower.State) {
+        switch state {
+        case .connecting:
+            status = "Connecting to \(connectedLeader ?? "leader")…"
+        case .syncing:
+            status = "Syncing with \(connectedLeader ?? "leader")"
+            append("Connected")
+        case let .reconnecting(reason):
+            status = "Reconnecting to \(connectedLeader ?? "leader")…"
+            append("Reconnecting: \(reason)")
+        case let .failed(message):
+            status = "Failed: \(message)"
+            append("Follower error: \(message)")
+        case .stopped:
+            break
+        }
+    }
+
+    private func record(_ round: ClockSyncRound) {
+        latestRound = round
+        player.update(clockMap: round.map)
+        rounds.append(round)
+        if rounds.count > historyLimit {
+            rounds.removeFirst(rounds.count - historyLimit)
+        }
+
+        let rtt = round.best.map { String(format: "rtt %.2fms", Double($0.roundTrip) / 1e6) } ?? "no replies"
+        var line = "#\(round.index) \(round.probesReceived)/\(round.probesSent) \(rtt) \(round.verdict)"
+        if let map = round.map {
+            let offset = Double(map.offset(atLocal: round.localTime)) / 1e6
+            line += String(format: " offset %.3fms skew %+.2fppm", offset, map.skewPPM)
+        }
+        if let residual = round.residual {
+            line += String(format: " res %+.0fµs", Double(residual) / 1e3)
+        }
+        append(line)
+    }
+
+    // MARK: - Helpers
+
+    private func tearDown() {
+        player.update(playback: .stopped)
+        player.update(clockMap: nil)
+        leader?.stop()
+        leader = nil
+        follower?.stop()
+        follower = nil
+        browser?.cancel()
+        browser = nil
+        followerCount = 0
+        discoveredLeaders = []
+        connectedLeader = nil
+        latestRound = nil
+        rounds = []
+    }
+
+    private func append(_ text: String) {
+        log.append(LogLine(date: .now, text: text))
+        if log.count > logLimit {
+            log.removeFirst(log.count - logLimit)
+        }
+        ClockSyncNetwork.logger.debug("\(text, privacy: .public)")
+    }
+
+    private static func makeDeviceName() -> String {
+        #if os(macOS)
+        let base = Host.current().localizedName ?? "Mac"
+        #else
+        let base = UIDevice.current.model
+        #endif
+        let suffix = String(UInt16.random(in: .min ... .max), radix: 16, uppercase: true)
+        return "\(base) \(suffix)"
+    }
+}
