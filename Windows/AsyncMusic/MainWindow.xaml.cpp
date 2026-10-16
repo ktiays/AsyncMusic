@@ -404,16 +404,31 @@ void MainWindow::OnCopyReport(IInspectable const&, RoutedEventArgs const&) {
 
 void MainWindow::tick() {
     if (!engine_) return;
-    // The caption buttons' width depends on the DPI; keep the title bar clear of them.
-    if (auto root = Content().XamlRoot()) {
-        const double inset = AppWindow().TitleBar().RightInset() / root.RasterizationScale();
-        captionButtonsColumn().Width(GridLengthHelper::FromPixels(inset));
+    // A glitch in drawing must never take the app, and with it the group's audio, down: an
+    // exception escaping this timer would end the process.
+    try {
+        // Nothing to draw while minimized; the engine plays on, and everything is redrawn on
+        // restore. (A minimized window also reports a caption inset that is not a valid width.)
+        const auto presenter = AppWindow().Presenter().try_as<Microsoft::UI::Windowing::OverlappedPresenter>();
+        if (presenter && presenter.State() == Microsoft::UI::Windowing::OverlappedPresenterState::Minimized) {
+            dirty_ = true;
+            return;
+        }
+        // The caption buttons' width depends on the DPI; keep the title bar clear of them.
+        if (auto root = Content().XamlRoot(); root && root.RasterizationScale() > 0) {
+            const double inset = AppWindow().TitleBar().RightInset() / root.RasterizationScale();
+            if (std::isfinite(inset) && inset >= 0 && inset < 1000) {
+                captionButtonsColumn().Width(GridLengthHelper::FromPixels(inset));
+            }
+        }
+        const GroupSession::Snapshot state = engine_->session().snapshot();
+        if (dirty_.exchange(false)) {
+            refresh(state);
+        }
+        refreshLive(state);
+    } catch (hresult_error const& error) {
+        OutputDebugStringW((L"AsyncMusic: drawing failed: " + error.message() + L"\n").c_str());
     }
-    const GroupSession::Snapshot state = engine_->session().snapshot();
-    if (dirty_.exchange(false)) {
-        refresh(state);
-    }
-    refreshLive(state);
 }
 
 void MainWindow::refresh(const GroupSession::Snapshot& state) {

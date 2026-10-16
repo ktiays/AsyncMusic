@@ -8,6 +8,7 @@
 #   window <name>     acts on another top-level window from here on (e.g. a file dialog)
 #   setvalue <automation id>|<text>   types into a field
 #   press <automation id>             clicks a button by automation ID
+#   minimize | restore                minimizes or restores the window
 param([string]$Window = "AsyncMusic")
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
 $out = @()
@@ -48,6 +49,10 @@ try {
             $button.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()
             $out += "Pressed $id"
             Start-Sleep -Milliseconds 300
+        } elseif ($request -eq "minimize" -or $request -eq "restore") {
+            $state = if ($request -eq "minimize") { [Windows.Automation.WindowVisualState]::Minimized } else { [Windows.Automation.WindowVisualState]::Normal }
+            $app.GetCurrentPattern([Windows.Automation.WindowPattern]::Pattern).SetWindowVisualState($state)
+            $out += "Window $request"
         } elseif ($request -eq "dump") {
             foreach ($element in $app.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)) {
                 $name = $element.Current.Name
