@@ -13,6 +13,7 @@ add_library(asyncmusic_core
     src/playback.cpp
     src/protocol.cpp
     src/renderer.cpp
+    src/speakers.cpp
     src/stream_buffer.cpp
 )
 add_library(AsyncMusic::Core ALIAS asyncmusic_core)

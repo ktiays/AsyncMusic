@@ -20,6 +20,10 @@ namespace asyncmusic {
 /// which is never one of the reserved values.
 constexpr uint64_t kPlaybackSourceNone = 0;
 constexpr uint64_t kPlaybackSourceMetronome = 1;
+/// Clicks alternating between the left and right channel, to check a stereo pair's sides.
+constexpr uint64_t kPlaybackSourceChannelTest = 2;
+/// File IDs are kept at or above this; everything below is reserved for generated sources.
+constexpr uint64_t kPlaybackSourceFirstFile = 16;
 
 /// What the group should be playing, expressed on the leader's clock.
 ///

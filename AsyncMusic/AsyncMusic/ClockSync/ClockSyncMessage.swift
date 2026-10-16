@@ -18,6 +18,11 @@ nonisolated enum ClockSyncMessage: Sendable, Equatable {
     /// The TCP port of the leader's audio stream, on the same host as the clock service.
     /// Sent with the playback state, so followers need no second Bonjour lookup.
     case audioPort(session: UInt64, port: UInt16)
+    /// Sent by followers every round: a stable device ID and a display name.
+    case hello(device: UInt64, name: String)
+    /// The group's speaker layout and the channel the receiving follower plays from
+    /// `switchLeaderTime` on. `revision` increases with every change within a leader session.
+    case speakers(revision: UInt32, session: UInt64, layout: SpeakerLayout, channel: SpeakerChannel, switchLeaderTime: Int64)
 
     func encoded() -> Data {
         let message: asyncmusic.ClockSyncMessage = switch self {
@@ -29,6 +34,10 @@ nonisolated enum ClockSyncMessage: Sendable, Equatable {
             .makePlayback(revision, session, state)
         case let .audioPort(session, port):
             .makeAudioPort(session, port)
+        case let .hello(device, name):
+            .makeHello(device, Data(Self.truncated(name).utf8).coreBytes)
+        case let .speakers(revision, session, layout, channel, switchLeaderTime):
+            .makeSpeakers(revision, session, layout, channel, switchLeaderTime)
         }
         return Data(message.encode())
     }
@@ -48,8 +57,22 @@ nonisolated enum ClockSyncMessage: Sendable, Equatable {
             self = .playback(revision: message.sequence, session: message.session, state: message.playback)
         case .audioPort:
             self = .audioPort(session: message.session, port: message.port)
+        case .hello:
+            self = .hello(device: message.device, name: String(decoding: Data(message.name), as: UTF8.self))
+        case .speakers:
+            self = .speakers(revision: message.sequence, session: message.session, layout: message.layout, channel: message.channel, switchLeaderTime: message.switchLeaderTime)
         @unknown default:
             return nil
         }
+    }
+
+    /// Cuts `name` at a character boundary to what a hello carries.
+    private static func truncated(_ name: String) -> String {
+        var result = ""
+        for character in name {
+            guard result.utf8.count + character.utf8.count <= asyncmusic.kClockSyncMaximumNameLength else { break }
+            result.append(character)
+        }
+        return result
     }
 }

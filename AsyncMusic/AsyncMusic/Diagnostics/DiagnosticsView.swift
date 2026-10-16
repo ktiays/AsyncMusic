@@ -8,46 +8,44 @@ import Charts
 import SwiftUI
 import UniformTypeIdentifiers
 
-struct ClockSyncDebugView: View {
-    @State private var session = ClockSyncSession()
+/// Everything about sync, streaming and output in detail, for diagnosing problems: clock
+/// estimates and their history, render statistics, manual latency adjustment, raw playback
+/// controls (metronome, channel test) and the log.
+struct DiagnosticsView: View {
+    let session: ClockSyncSession
     @State private var isImportingFile = false
 
     var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    Picker("Role", selection: Binding(get: { session.role }, set: { session.setRole($0) })) {
-                        ForEach(ClockSyncSession.Role.allCases) { role in
-                            Text(role.rawValue).tag(role)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    LabeledContent("Device", value: session.deviceName)
-                    LabeledContent("Status", value: session.status)
-                }
-
-                switch session.role {
-                case .off:
-                    EmptyView()
-                case .leader:
-                    leaderSection
-                case .follower:
-                    followerSections
-                }
-
-                if session.role != .off {
-                    playbackSection
-                    outputSection
-                }
-
-                logSection
+        Form {
+            Section {
+                LabeledContent("Role", value: session.role.rawValue)
+                LabeledContent("Device", value: session.deviceName)
+                LabeledContent("Device ID", value: String(format: "%016llx", session.identity.id))
+                LabeledContent("Status", value: session.status)
             }
-            .formStyle(.grouped)
-            .navigationTitle("Clock Sync")
-            .fileImporter(isPresented: $isImportingFile, allowedContentTypes: [.audio]) { result in
-                if case let .success(url) = result {
-                    session.loadTrack(from: url)
-                }
+
+            switch session.role {
+            case .off:
+                EmptyView()
+            case .leader:
+                leaderSection
+            case .follower:
+                followerSections
+            }
+
+            if session.role != .off {
+                speakersSection
+                playbackSection
+                outputSection
+            }
+
+            logSection
+        }
+        .formStyle(.grouped)
+        .navigationTitle("Diagnostics")
+        .fileImporter(isPresented: $isImportingFile, allowedContentTypes: [.audio]) { result in
+            if case let .success(url) = result {
+                session.loadTrack(from: url)
             }
         }
     }
@@ -57,6 +55,9 @@ struct ClockSyncDebugView: View {
     private var leaderSection: some View {
         Section("Leader") {
             LabeledContent("Followers", value: "\(session.followerCount)")
+            ForEach(session.members) { member in
+                LabeledContent(member.name, value: String(format: "%016llx%@", member.id, member.isActive ? "" : " · silent"))
+            }
             LeaderClockLabel(map: .identity())
         }
     }
@@ -65,24 +66,9 @@ struct ClockSyncDebugView: View {
 
     @ViewBuilder
     private var followerSections: some View {
-        Section("Leaders") {
-            if session.discoveredLeaders.isEmpty {
-                Text("None found on this network yet")
-                    .foregroundStyle(.secondary)
-            }
-            ForEach(session.discoveredLeaders) { leader in
-                Button {
-                    session.follow(leader)
-                } label: {
-                    HStack {
-                        Text(leader.name)
-                        Spacer()
-                        if session.connectedLeader == leader.name {
-                            Image(systemName: "checkmark")
-                        }
-                    }
-                }
-            }
+        Section("Leader") {
+            LabeledContent("Connected to", value: session.connectedLeader ?? "–")
+            LabeledContent("Discovered", value: "\(session.discoveredLeaders.count)")
         }
 
         if let round = session.latestRound {
@@ -143,6 +129,22 @@ struct ClockSyncDebugView: View {
         .frame(height: 140)
     }
 
+    // MARK: - Speakers
+
+    private var speakersSection: some View {
+        Section("Speakers") {
+            LabeledContent("Layout", value: (session.role == .leader ? session.speakerLayout : session.remoteLayout).title)
+            LabeledContent("This device plays", value: session.player.channel.title)
+            if session.role == .leader {
+                ForEach(session.speakerLayout.channels, id: \.rawValue) { channel in
+                    let device = session.channelAssignments[channel]
+                    LabeledContent(channel.title, value: device.map { session.name(ofDevice: $0) ?? String(format: "%016llx (not here)", $0) } ?? "–")
+                }
+                LabeledContent("Split active", value: session.activeChannels.isEmpty ? "No (full mix everywhere)" : "Yes")
+            }
+        }
+    }
+
     // MARK: - Playback
 
     private var playbackSection: some View {
@@ -169,6 +171,7 @@ struct ClockSyncDebugView: View {
 
                 HStack {
                     Button("Metronome") { session.play(source: PlaybackSource.metronome) }
+                    Button("Channel Test") { session.play(source: PlaybackSource.channelTest) }
                     Button("Play File") {
                         if let track = session.selectedTrack {
                             session.play(source: track.id)
@@ -219,10 +222,41 @@ struct ClockSyncDebugView: View {
             HStack {
                 Text("Log")
                 Spacer()
+                Button("Copy Report") { copyReport() }
+                    .font(.caption)
                 Button("Clear") { session.clearLog() }
                     .font(.caption)
             }
         }
+    }
+}
+
+extension DiagnosticsView {
+    /// Puts a plain-text summary of this device's state and its log on the clipboard, to paste
+    /// into a bug report.
+    private func copyReport() {
+        let player = session.player
+        let stats = player.renderStats
+        var lines = [
+            "AsyncMusic diagnostics",
+            "Device: \(session.deviceName) (\(String(format: "%016llx", session.identity.id)))",
+            "Role: \(session.role.rawValue) · \(session.status)",
+            "Engine: \(player.isRunning ? "running" : "stopped")\(player.engineError.map { " · error: \($0)" } ?? "")",
+            String(format: "Output: %.0f Hz, latency %.2f ms, extra delay %+.1f ms", player.outputSampleRate, player.reportedLatency * 1e3, player.manualOffset),
+            "Playing: \(player.playback.isPlaying() ? session.describe(player.playback.source) : "nothing")\(player.isWaitingForAudio ? " (waiting for audio)" : "") · channel \(player.channel.title)",
+            String(format: "Render: playing %@, position %.3f s, error %+.0f µs, buffered %.1f s, gaps %d, repositions %d, peak %.4f, host time %@",
+                   stats.isPlaying ? "yes" : "no", stats.mediaSeconds, stats.errorMicroseconds, stats.bufferedSeconds, stats.gaps, stats.jumps, stats.outputPeak, stats.hostTimeValid ? "valid" : "INVALID"),
+            "",
+            "Log (oldest first):",
+        ]
+        lines += session.log.map { "\($0.date.formatted(date: .omitted, time: .standard))  \($0.text)" }
+        let report = lines.joined(separator: "\n")
+        #if os(macOS)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(report, forType: .string)
+        #else
+        UIPasteboard.general.string = report
+        #endif
     }
 }
 
@@ -242,6 +276,7 @@ private struct RenderStatsView: View {
             LabeledContent("Rate correction", value: String(format: "%+.1f ppm", stats.correctionPPM))
             LabeledContent("Repositions", value: "\(stats.jumps)")
             LabeledContent("Stream gaps", value: "\(stats.gaps)")
+            LabeledContent("Output level", value: stats.isPlaying ? (stats.outputPeak > 0 ? String(format: "%.1f dBFS", 20 * log10(stats.outputPeak)) : "silent") : "–")
             if stats.isPlaying, stats.bufferedSeconds > 0 {
                 LabeledContent("Buffered ahead", value: String(format: "%.1f s", stats.bufferedSeconds))
             }
@@ -268,5 +303,7 @@ private struct LeaderClockLabel: View {
 }
 
 #Preview {
-    ClockSyncDebugView()
+    NavigationStack {
+        DiagnosticsView(session: ClockSyncSession())
+    }
 }

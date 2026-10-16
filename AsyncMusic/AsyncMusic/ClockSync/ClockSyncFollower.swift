@@ -33,7 +33,9 @@ nonisolated struct ClockSyncRound: Sendable {
 ///
 /// Each round sends a short burst of pings. Spacing them out decorrelates their delays, and
 /// the first one also wakes the Wi-Fi radio out of power save so the later ones see the
-/// fast path. Only the round's fastest exchange is fed to the estimator.
+/// fast path. Only the round's fastest exchange is fed to the estimator. After each round the
+/// follower says hello (its device ID and name), which tells the leader it is still there and
+/// which speaker channel to give it.
 ///
 /// When the connection fails or the leader stops answering (the app was suspended, Wi-Fi
 /// dropped, the leader's listener came back on a new port), a fresh connection to the same
@@ -71,9 +73,12 @@ nonisolated final class ClockSyncFollower: @unchecked Sendable {
     /// Called when the leader's audio stream endpoint becomes known or changes: the address
     /// this connection reached, with the port the leader announced.
     var onAudioEndpoint: (@Sendable (NWEndpoint) -> Void)?
+    /// Called when the leader assigns this device a speaker channel (not for repeats).
+    var onSpeakers: (@Sendable (_ layout: SpeakerLayout, _ channel: SpeakerChannel, _ switchLeaderTime: Int64) -> Void)?
 
     private let queue = DispatchQueue(label: "me.ktiays.AsyncMusic.clock-sync.follower", qos: .userInteractive)
     private let endpoint: NWEndpoint
+    private let identity: DeviceIdentity
     private var connection: NWConnection?
     /// Pings are only sent on a ready connection; one queued earlier would carry a stale t0.
     private var connectionReady = false
@@ -86,12 +91,14 @@ nonisolated final class ClockSyncFollower: @unchecked Sendable {
     private var roundProbesSent = 0
     private var leaderSession: UInt64?
     private var playbackRevision: (session: UInt64, revision: UInt32)?
+    private var speakersRevision: (session: UInt64, revision: UInt32)?
     private var lastSleepDuration = HostClock.sleepDuration()
     private var audioEndpoint: NWEndpoint?
 
-    init(endpoint: NWEndpoint, configuration: Configuration = Configuration()) {
+    init(endpoint: NWEndpoint, identity: DeviceIdentity, configuration: Configuration = Configuration()) {
         self.configuration = configuration
         self.endpoint = endpoint
+        self.identity = identity
     }
 
     func start() {
@@ -148,6 +155,7 @@ nonisolated final class ClockSyncFollower: @unchecked Sendable {
             connectionReady = true
             onStateChange?(.syncing)
             receive(on: connection)
+            sendHello()
         case let .waiting(error):
             // The connection retries by itself once a usable network path appears.
             connectionReady = false
@@ -225,6 +233,8 @@ nonisolated final class ClockSyncFollower: @unchecked Sendable {
             windowCount: Int(estimator.windowCount())
         ))
 
+        sendHello()
+
         let interval = round < configuration.warmupRounds ? configuration.warmupInterval : configuration.steadyInterval
         queue.asyncAfter(deadline: .now() + interval) { [self] in
             startRound()
@@ -243,7 +253,9 @@ nonisolated final class ClockSyncFollower: @unchecked Sendable {
                 handlePlayback(revision: revision, session: session, state: state)
             case let .audioPort(_, port):
                 handleAudioPort(port, connection: connection)
-            case .ping, nil:
+            case let .speakers(revision, session, layout, channel, switchLeaderTime):
+                handleSpeakers(revision: revision, session: session, layout: layout, channel: channel, switchLeaderTime: switchLeaderTime)
+            case .ping, .hello, nil:
                 break
             }
             if error == nil, running {
@@ -260,6 +272,21 @@ nonisolated final class ClockSyncFollower: @unchecked Sendable {
         guard endpoint != audioEndpoint else { return }
         audioEndpoint = endpoint
         onAudioEndpoint?(endpoint)
+    }
+
+    /// Sent outside the probe bursts so it never delays a ping.
+    private func sendHello() {
+        guard connectionReady, let connection else { return }
+        connection.send(content: ClockSyncMessage.hello(device: identity.id, name: identity.name).encoded(), completion: .idempotent)
+    }
+
+    private func handleSpeakers(revision: UInt32, session: UInt64, layout: SpeakerLayout, channel: SpeakerChannel, switchLeaderTime: Int64) {
+        if let current = speakersRevision, current.session == session,
+           Int32(bitPattern: revision &- current.revision) <= 0 {
+            return
+        }
+        speakersRevision = (session, revision)
+        onSpeakers?(layout, channel, switchLeaderTime)
     }
 
     private func handlePlayback(revision: UInt32, session: UInt64, state: PlaybackState) {

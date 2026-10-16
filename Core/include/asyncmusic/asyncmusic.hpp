@@ -13,4 +13,5 @@
 #include "protocol.hpp"
 #include "ref_counted.hpp"
 #include "renderer.hpp"
+#include "speakers.hpp"
 #include "stream_buffer.hpp"

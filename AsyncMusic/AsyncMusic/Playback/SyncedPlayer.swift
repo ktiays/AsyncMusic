@@ -34,6 +34,8 @@ final class SyncedPlayer {
     private(set) var ioBufferDuration: Double = 0
     private(set) var playback = PlaybackState.stopped()
     private(set) var files: [UInt64: MediaFile] = [:]
+    /// The speaker channel this device plays (or will, once the scheduled switch is heard).
+    private(set) var channel = SpeakerChannel.full
 
     /// Extra delay on top of the reported latency, in milliseconds. Increase it when this
     /// device sounds late compared with the others (common with Bluetooth, whose reported
@@ -50,7 +52,7 @@ final class SyncedPlayer {
 
     /// True when a file is playing that this device has neither locally nor from the leader.
     var isWaitingForAudio: Bool {
-        playback.isPlaying() && playback.source != PlaybackSource.metronome
+        playback.isPlaying() && !PlaybackSource.isGenerated(playback.source)
             && files[playback.source] == nil && remoteStreamSource != playback.source
     }
 
@@ -146,6 +148,13 @@ final class SyncedPlayer {
         }
     }
 
+    /// Plays only `channel` of the source (on all of this device's outputs) from leader time
+    /// `leaderTime` on, as heard; pass `.min` to switch right away.
+    func setChannel(_ channel: SpeakerChannel, at leaderTime: Int64 = .min) {
+        self.channel = channel
+        renderer.setChannelMix(.forChannel(channel), leaderTime)
+    }
+
     /// Plays `source` from `buffer`, which the leader's stream fills, unless the file is
     /// available locally. Replaces any previous remote stream.
     func setRemoteStream(_ buffer: StreamBuffer, source: UInt64) {
@@ -237,6 +246,8 @@ final class SyncedPlayer {
             source = .silence
         } else if playback.source == PlaybackSource.metronome {
             source = .metronome
+        } else if playback.source == PlaybackSource.channelTest {
+            source = .channelTest
         } else if let file = files[playback.source] {
             source = startStream(for: file).map { .stream($0) } ?? .silence
         } else if let remoteBuffer, remoteStreamSource == playback.source {
@@ -259,6 +270,8 @@ final class SyncedPlayer {
             renderer.setPlayback(playback, Int32(playbackGeneration), .silence, nil)
         case .metronome:
             renderer.setPlayback(playback, Int32(playbackGeneration), .metronome, nil)
+        case .channelTest:
+            renderer.setPlayback(playback, Int32(playbackGeneration), .channelTest, nil)
         case let .stream(buffer):
             renderer.setPlayback(playback, Int32(playbackGeneration), .stream, buffer)
         }
@@ -267,6 +280,7 @@ final class SyncedPlayer {
     private enum RenderSource {
         case silence
         case metronome
+        case channelTest
         case stream(StreamBuffer)
     }
 

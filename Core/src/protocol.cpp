@@ -100,6 +100,25 @@ ClockSyncMessage ClockSyncMessage::makeAudioPort(uint64_t session, uint16_t port
     return message;
 }
 
+ClockSyncMessage ClockSyncMessage::makeHello(uint64_t device, const Bytes& name) {
+    ClockSyncMessage message;
+    message.type = Type::hello;
+    message.device = device;
+    message.name = Bytes(name.begin(), name.begin() + static_cast<std::ptrdiff_t>(std::min(name.size(), kClockSyncMaximumNameLength)));
+    return message;
+}
+
+ClockSyncMessage ClockSyncMessage::makeSpeakers(uint32_t revision, uint64_t session, SpeakerLayout layout, SpeakerChannel channel, int64_t switchLeaderTime) {
+    ClockSyncMessage message;
+    message.type = Type::speakers;
+    message.sequence = revision;
+    message.session = session;
+    message.layout = layout;
+    message.channel = channel;
+    message.switchLeaderTime = switchLeaderTime;
+    return message;
+}
+
 Bytes ClockSyncMessage::encode() const {
     Bytes bytes;
     bytes.reserve(48);
@@ -107,7 +126,7 @@ Bytes ClockSyncMessage::encode() const {
     writer.write(kMagic);
     writer.write(kVersion);
     writer.write(static_cast<uint8_t>(type));
-    writer.write(type == Type::audioPort ? uint32_t{0} : sequence);
+    writer.write(type == Type::audioPort || type == Type::hello ? uint32_t{0} : sequence);
     switch (type) {
     case Type::ping:
         writer.write(t0);
@@ -127,6 +146,19 @@ Bytes ClockSyncMessage::encode() const {
     case Type::audioPort:
         writer.write(session);
         writer.write(port);
+        break;
+    case Type::hello: {
+        const size_t length = std::min(name.size(), kClockSyncMaximumNameLength);
+        writer.write(device);
+        writer.write(static_cast<uint8_t>(length));
+        bytes.insert(bytes.end(), name.begin(), name.begin() + static_cast<std::ptrdiff_t>(length));
+        break;
+    }
+    case Type::speakers:
+        writer.write(session);
+        writer.write(static_cast<uint8_t>(layout));
+        writer.write(static_cast<uint8_t>(channel));
+        writer.write(switchLeaderTime);
         break;
     }
     return bytes;
@@ -158,6 +190,24 @@ bool ClockSyncMessage::decode(const uint8_t* data, size_t size, ClockSyncMessage
         result.type = Type::audioPort;
         if (!reader.read(result.session) || !reader.read(result.port)) return false;
         break;
+    case static_cast<uint8_t>(Type::hello): {
+        result.type = Type::hello;
+        uint8_t length = 0;
+        if (!reader.read(result.device) || !reader.read(length) || reader.remaining() < length) return false;
+        result.name = reader.rest();
+        result.name.resize(length);
+        break;
+    }
+    case static_cast<uint8_t>(Type::speakers): {
+        result.type = Type::speakers;
+        uint8_t layout = 0, channel = 0;
+        if (!reader.read(result.session) || !reader.read(layout) || !reader.read(channel) || !reader.read(result.switchLeaderTime)) return false;
+        // Values from a newer version are not representable here (and closed enums in Swift).
+        if (layout > kSpeakerLayoutMaximum || channel > kSpeakerChannelMaximum) return false;
+        result.layout = static_cast<SpeakerLayout>(layout);
+        result.channel = static_cast<SpeakerChannel>(channel);
+        break;
+    }
     default:
         return false;
     }

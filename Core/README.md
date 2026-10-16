@@ -9,7 +9,8 @@ it directly.
 | `clock.hpp`, `clock_estimator.hpp` | NTP-style probe math and the min-RTT-filtered, RTT-weighted fit of offset and skew to the leader's clock |
 | `playback.hpp` | Playback state on the leader's timeline; `PlaybackPosition` (heard media time, thread-safe) |
 | `stream_buffer.hpp` | Lock-free single-writer ring of stereo frames addressed by absolute frame number |
-| `renderer.hpp` | Per-callback scheduling onto the leader's timeline, PI rate correction, repositioning, gap fades, metronome |
+| `renderer.hpp` | Per-callback scheduling onto the leader's timeline, PI rate correction, repositioning, gap fades, channel mix switched at a scheduled leader time, metronome and left/right test signal |
+| `speakers.hpp` | Speaker layouts (everywhere, stereo pair; room for 5.1/7.1), the channel each device plays, and the matrix that routes it |
 | `protocol.hpp` | Wire formats of the clock sync datagrams and the audio stream frames, PCM16 helpers |
 | `host_clock.hpp` | The host clock and sleep detection per platform |
 
@@ -22,8 +23,9 @@ it directly.
 - **The same clock**: those timestamps must be on the clock `hostClockNanoseconds()` reads
   (see `host_clock.hpp` for which one per platform).
 - **Networking**: UDP for `ClockSyncMessage`, TCP for `AudioStreamMessage` frames, and mDNS to
-  discover leaders (service `_asyncmusic._udp`). The probe scheduling, stream sending and
-  adaptive start live in the Apple app (`AsyncMusic/ClockSync`, `AsyncMusic/Streaming`) as a
+  discover leaders (service `_asyncmusic._udp`). The probe scheduling, stream sending,
+  adaptive start and speaker assignment (which device plays which channel, with fallback to
+  the full mix while a channel's device is missing) live in the Apple app (`AsyncMusic/ClockSync`, `AsyncMusic/Streaming`) as a
   reference for porting.
 - **Codecs**: the stream carries PCM16 or ALAC (`AudioStreamCodec`); encoding and decoding
   ALAC is left to the platform.
@@ -37,6 +39,7 @@ cmake --build build
 ```
 
 The tests cover clock estimation under simulated Wi-Fi jitter, start timing and drift tracking,
+channel routing and its scheduled switch,
 bit-exact playback through the ring (including wrap-around and late joins), concurrent ring
 access, gap fades, and the wire format against bytes captured from the original Swift
 implementation, so devices on either implementation interoperate.

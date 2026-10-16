@@ -36,20 +36,32 @@ inline StereoSample interpolate(const StreamBuffer& buffer, const FrameRange& ra
     };
 }
 
-}  // namespace
-
-float metronomeSample(double seconds) {
-    constexpr double beatsPerMinute = 120;
-    constexpr int beatsPerBar = 4;
-    if (seconds < 0) return 0;
-    const double period = 60 / beatsPerMinute;
-    const double beat = std::floor(seconds / period);
-    const double sinceBeat = seconds - beat * period;
-    if (sinceBeat >= 0.08) return 0;
-    const double frequency = static_cast<int64_t>(beat) % beatsPerBar == 0 ? 1760.0 : 880.0;
+/// One click `sinceBeat` seconds after its beat; silence once it has died away.
+float click(double sinceBeat, double frequency) {
+    if (sinceBeat < 0 || sinceBeat >= 0.08) return 0;
     const double attack = std::min(1.0, sinceBeat / 0.0005);
     const double envelope = attack * std::exp(-sinceBeat / 0.012);
     return static_cast<float>(0.5 * envelope * std::sin(2 * kPi * frequency * sinceBeat));
+}
+
+constexpr double kBeatPeriod = 60.0 / 120;  // 120 bpm
+
+}  // namespace
+
+float metronomeSample(double seconds) {
+    constexpr int beatsPerBar = 4;
+    if (seconds < 0) return 0;
+    const double beat = std::floor(seconds / kBeatPeriod);
+    const double frequency = static_cast<int64_t>(beat) % beatsPerBar == 0 ? 1760.0 : 880.0;
+    return click(seconds - beat * kBeatPeriod, frequency);
+}
+
+StereoSample channelTestSample(double seconds) {
+    if (seconds < 0) return {};
+    const double beat = std::floor(seconds / kBeatPeriod);
+    const bool isRight = static_cast<int64_t>(beat) % 2 == 1;
+    const float value = click(seconds - beat * kBeatPeriod, isRight ? 1320.0 : 880.0);
+    return isRight ? StereoSample{0, value} : StereoSample{value, 0};
 }
 
 SyncedRenderer::SyncedRenderer(const RendererConfiguration& configuration) : configuration_(configuration) {}
@@ -78,6 +90,14 @@ void SyncedRenderer::setPlayback(const PlaybackState& playback, int generation, 
     shared_.stream = stream;
 }
 
+void SyncedRenderer::setChannelMix(const ChannelMix& mix, int64_t fromLeaderTime) {
+    std::lock_guard<std::mutex> lock(controlMutex_);
+    // If an earlier switch is still pending it is skipped; switches are seconds apart.
+    shared_.mixBefore = shared_.mix;
+    shared_.mix = mix;
+    shared_.mixFromLeaderTime = fromLeaderTime;
+}
+
 RenderStats SyncedRenderer::latestStats() const {
     std::lock_guard<std::mutex> lock(statsMutex_);
     return published_;
@@ -101,6 +121,7 @@ void SyncedRenderer::render(bool hasHostTime, int64_t hostTime, int frameCount, 
     case RenderSourceKind::silence:
         break;
     case RenderSourceKind::metronome:
+    case RenderSourceKind::channelTest:
         sourceRate = outputRate;
         break;
     case RenderSourceKind::stream:
@@ -113,16 +134,20 @@ void SyncedRenderer::render(bool hasHostTime, int64_t hostTime, int frameCount, 
         std::fill(left, left + frameCount, 0.0f);
         std::fill(right, right + frameCount, 0.0f);
         wasAudible_ = false;
+        // Nothing to ramp from while silent.
+        appliedMix_ = current_.mix;
         stats_.isPlaying = false;
         stats_.correctionPPM = 0;
         stats_.bufferedSeconds = 0;
+        stats_.outputPeak = 0;
         publishStats();
         return;
     }
 
     // Which instant of the source must be heard when this buffer's first frame is?
     const int64_t audibleAt = hostTime + current_.presentationDelay;
-    const int64_t mediaTime = current_.playback.mediaTimeAtLeaderTime(current_.clockMap.leaderTimeFromLocal(audibleAt));
+    const int64_t audibleAtLeader = current_.clockMap.leaderTimeFromLocal(audibleAt);
+    const int64_t mediaTime = current_.playback.mediaTimeAtLeaderTime(audibleAtLeader);
     const double target = static_cast<double>(mediaTime) * sourceRate / 1e9;
     const double error = target - position_;
 
@@ -160,6 +185,13 @@ void SyncedRenderer::render(bool hasHostTime, int64_t hostTime, int frameCount, 
             right[frame] = value;
         }
         break;
+    case RenderSourceKind::channelTest:
+        for (int frame = 0; frame < frameCount; ++frame) {
+            const StereoSample sample = channelTestSample((position_ + frame * increment) / outputRate);
+            left[frame] = sample.left;
+            right[frame] = sample.right;
+        }
+        break;
     case RenderSourceKind::stream:
         renderStream(*current_.stream, sourceRate, increment, frameCount, outputRate, left, right);
         break;
@@ -175,14 +207,39 @@ void SyncedRenderer::render(bool hasHostTime, int64_t hostTime, int frameCount, 
         }
         fadeRemaining_ = std::max(0, fadeRemaining_ - frameCount);
     }
+    applyMix(audibleAtLeader >= current_.mixFromLeaderTime ? current_.mix : current_.mixBefore, frameCount, left, right);
     position_ += frameCount * increment;
     wasAudible_ = true;
 
+    float peak = 0;
+    for (int frame = 0; frame < frameCount; ++frame) {
+        peak = std::max(peak, std::max(std::abs(left[frame]), std::abs(right[frame])));
+    }
+    // Decays to a tenth within about a quarter second at typical buffer sizes.
+    stats_.outputPeak = std::max(static_cast<double>(peak), stats_.outputPeak * 0.9);
     stats_.isPlaying = true;
     stats_.errorMicroseconds = error / sourceRate * 1e6;
     stats_.correctionPPM = correction * 1e6;
     stats_.mediaSeconds = position_ / sourceRate;
     publishStats();
+}
+
+void SyncedRenderer::applyMix(const ChannelMix& target, int frameCount, float* left, float* right) {
+    const ChannelMix from = appliedMix_;
+    appliedMix_ = target;
+    if (from == target && target.isIdentity()) return;
+    // Ramp the coefficients across the cycle when the mix changed, so the switch is click-free.
+    const float step = from == target ? 0 : 1.0f / static_cast<float>(std::max(frameCount, 1));
+    for (int frame = 0; frame < frameCount; ++frame) {
+        const float t = from == target ? 1 : static_cast<float>(frame + 1) * step;
+        const float ll = from.leftFromLeft + (target.leftFromLeft - from.leftFromLeft) * t;
+        const float lr = from.leftFromRight + (target.leftFromRight - from.leftFromRight) * t;
+        const float rl = from.rightFromLeft + (target.rightFromLeft - from.rightFromLeft) * t;
+        const float rr = from.rightFromRight + (target.rightFromRight - from.rightFromRight) * t;
+        const float l = left[frame], r = right[frame];
+        left[frame] = ll * l + lr * r;
+        right[frame] = rl * l + rr * r;
+    }
 }
 
 void SyncedRenderer::renderStream(const StreamBuffer& buffer, double sourceRate, double increment, int frameCount, double outputRate, float* left, float* right) {

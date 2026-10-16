@@ -26,9 +26,9 @@ nonisolated enum AudioStreamMessage {
     func framed() -> Data {
         let message: asyncmusic.AudioStreamMessage = switch self {
         case let .streamStart(streamID, source, sampleRate, startFrame, codec, cookie):
-            .makeStreamStart(streamID, source, sampleRate, startFrame, codec, cookie.bytes)
+            .makeStreamStart(streamID, source, sampleRate, startFrame, codec, cookie.coreBytes)
         case let .audio(streamID, startFrame, frameCount, payload):
-            .makeAudio(streamID, startFrame, Int32(frameCount), payload.bytes)
+            .makeAudio(streamID, startFrame, Int32(frameCount), payload.coreBytes)
         case let .bufferReport(streamID, endFrame):
             .makeBufferReport(streamID, endFrame)
         }
@@ -72,12 +72,6 @@ nonisolated enum AudioStreamNetwork {
         // Same reasoning as the clock sync parameters: AWDL adds latency spikes.
         parameters.includePeerToPeer = false
         return parameters
-    }
-}
-
-private extension Data {
-    nonisolated var bytes: asyncmusic.Bytes {
-        withUnsafeBytes { asyncmusic.makeBytes($0.bindMemory(to: UInt8.self).baseAddress, $0.count) }
     }
 }
 

@@ -11,6 +11,7 @@
 
 #include "config.hpp"
 #include "playback.hpp"
+#include "speakers.hpp"
 
 AM_ASSUME_NONNULL_BEGIN
 
@@ -25,6 +26,10 @@ inline Bytes makeBytes(const uint8_t* AM_NULLABLE data, size_t size) {
 
 // MARK: - Clock sync (UDP)
 
+/// Longest name a `hello` carries, in bytes; longer ones are cut (callers should cut at a
+/// character boundary first).
+constexpr size_t kClockSyncMaximumNameLength = 255;
+
 /// Datagrams of the clock sync channel. Fixed-size, little-endian:
 ///
 ///     header:    magic(2) = "AS" version(1) = 1 type(1) sequence(4)
@@ -32,17 +37,27 @@ inline Bytes makeBytes(const uint8_t* AM_NULLABLE data, size_t size) {
 ///     pong:      header session(8) t0(8) t1(8) t2(8)
 ///     playback:  header(sequence = revision) session(8) source(8) startLeaderTime(8) startMediaTime(8)
 ///     audioPort: header(sequence unused) session(8) port(2)
+///     hello:     header(sequence unused) device(8) nameLength(1) name(nameLength, UTF-8)
+///     speakers:  header(sequence = revision) session(8) layout(1) channel(1) switchLeaderTime(8)
 ///
 /// `session` identifies one run of the leader's timeline; a new value means followers must
 /// discard their clock estimate. Playback is repeated periodically since UDP may drop it, and
 /// `revision` increases with every change within a session. `audioPort` is the TCP port of
 /// the leader's audio stream on the same host as the clock service.
+///
+/// Followers introduce themselves with `hello` (a stable device ID and a display name),
+/// repeated every round. The leader answers each with `speakers`: the group's layout and the
+/// channel that follower plays from leader time `switchLeaderTime` on, so all devices switch
+/// together. Like playback it is repeated, with its own revision. Devices that predate a
+/// message type, or a layout or channel value, reject the datagram and keep playing the full mix.
 struct ClockSyncMessage {
     enum class AM_CLOSED_ENUM Type : uint8_t {
         ping = 1,
         pong = 2,
         playback = 3,
         audioPort = 4,
+        hello = 5,
+        speakers = 6,
     };
 
     Type type = Type::ping;
@@ -54,11 +69,20 @@ struct ClockSyncMessage {
     int64_t t2 = 0;
     PlaybackState playback;
     uint16_t port = 0;
+    /// `hello`: the follower's stable ID and its display name (UTF-8).
+    uint64_t device = 0;
+    Bytes name;
+    /// `speakers`
+    SpeakerLayout layout = SpeakerLayout::everywhere;
+    SpeakerChannel channel = SpeakerChannel::full;
+    int64_t switchLeaderTime = 0;
 
     static ClockSyncMessage makePing(uint32_t sequence, int64_t t0);
     static ClockSyncMessage makePong(uint32_t sequence, uint64_t session, int64_t t0, int64_t t1, int64_t t2);
     static ClockSyncMessage makePlayback(uint32_t revision, uint64_t session, const PlaybackState& playback);
     static ClockSyncMessage makeAudioPort(uint64_t session, uint16_t port);
+    static ClockSyncMessage makeHello(uint64_t device, const Bytes& name);
+    static ClockSyncMessage makeSpeakers(uint32_t revision, uint64_t session, SpeakerLayout layout, SpeakerChannel channel, int64_t switchLeaderTime);
 
     Bytes encode() const;
     /// Returns false for anything that is not a well-formed message of a known type.

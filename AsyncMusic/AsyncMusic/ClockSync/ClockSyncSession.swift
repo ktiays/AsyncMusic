@@ -8,13 +8,15 @@ import Foundation
 import Network
 import Observation
 import os
-#if canImport(UIKit)
-import UIKit
-#endif
 
 /// Drives clock sync and synced playback for the UI: either leads (advertises its clock and
 /// decides what plays) or follows a discovered leader, and keeps a short history of rounds for
-/// the debug view.
+/// the diagnostics view.
+///
+/// The leader also decides how the music is spread over the group (`SpeakerLayout`): every
+/// device playing the full mix, or a stereo pair with one device per channel. Channels are
+/// assigned to devices by their stable ID and remembered, so the same two devices pair up
+/// again next time. While a channel has no device present, everyone plays the full mix.
 @Observable
 final class ClockSyncSession {
     enum Role: String, CaseIterable, Identifiable {
@@ -38,7 +40,8 @@ final class ClockSyncSession {
         var text: String
     }
 
-    let deviceName = ClockSyncSession.makeDeviceName()
+    let identity = DeviceIdentity.current()
+    var deviceName: String { identity.name }
     let player = SyncedPlayer()
 
     /// How far ahead the leader schedules a start. Must comfortably exceed the time for the
@@ -52,6 +55,8 @@ final class ClockSyncSession {
     /// Once everyone is ready, the start is scheduled this far ahead, covering the play
     /// command's trip to followers and their output latency.
     let startMargin: Int64 = 500_000_000
+    /// Channel changes take effect this far ahead, so every device switches at the same moment.
+    let channelSwitchLead: Int64 = 400_000_000
 
     private(set) var isLoadingTrack = false
     /// The file the leader plays with "Play file".
@@ -62,12 +67,27 @@ final class ClockSyncSession {
 
     // Leader
     private(set) var followerCount = 0
+    /// Followers that introduced themselves, with whether each is currently reachable.
+    private(set) var members: [ClockSyncLeader.Member] = []
+    private(set) var speakerLayout: SpeakerLayout
+    /// The device chosen for each channel of the layout. Kept per channel across layouts and
+    /// launches; entries for devices not around are kept too, in case they come back.
+    private(set) var channelAssignments: [SpeakerChannel: UInt64]
+    /// The channel each device plays right now (absent: the full mix), as sent to the group.
+    private(set) var activeChannels: [UInt64: SpeakerChannel] = [:]
+
+    /// True when the system reports that this app may not use the local network, which
+    /// silently breaks most of the group traffic. The user has to allow it in Settings.
+    private(set) var isLocalNetworkDenied = false
 
     // Follower
     private(set) var discoveredLeaders: [DiscoveredLeader] = []
     private(set) var connectedLeader: String?
+    private(set) var followerState: ClockSyncFollower.State?
     private(set) var latestRound: ClockSyncRound?
     private(set) var rounds: [ClockSyncRound] = []
+    /// The layout the leader announced; this device's channel is `player.channel`.
+    private(set) var remoteLayout = SpeakerLayout.everywhere
 
     private(set) var log: [LogLine] = []
 
@@ -77,6 +97,16 @@ final class ClockSyncSession {
         case .leader: .identity()
         case .follower: latestRound?.map
         case .off: nil
+        }
+    }
+
+    /// True while a file is being buffered on followers before it starts.
+    var isPreparingPlayback: Bool { pendingStart != nil }
+
+    /// Whether every channel of the layout has a device that is present.
+    var isLayoutComplete: Bool {
+        speakerLayout.channels.allSatisfy { channel in
+            channelAssignments[channel].map(isDevicePresent) ?? false
         }
     }
 
@@ -91,8 +121,27 @@ final class ClockSyncSession {
     /// Identifies the play request whose adaptive start is pending, so a newer request or a
     /// stop cancels it.
     private var pendingStart: UUID?
+    private var endOfTrackTask: Task<Void, Never>?
+    /// The layout last sent to followers, so a layout change is announced even if no device's
+    /// channel changed (e.g. a stereo pair still waiting for its second device).
+    private var leaderAnnouncedLayout: SpeakerLayout?
     private var audioClient: AudioStreamClient?
     private var browser: NWBrowser?
+
+    private static let layoutKey = "ClockSyncSession.speakerLayout"
+    private static let assignmentsKey = "ClockSyncSession.channelAssignments"
+
+    init() {
+        let defaults = UserDefaults.standard
+        speakerLayout = SpeakerLayout(rawValue: UInt8(clamping: defaults.integer(forKey: Self.layoutKey))) ?? .everywhere
+        var assignments: [SpeakerChannel: UInt64] = [:]
+        for (key, value) in defaults.dictionary(forKey: Self.assignmentsKey) ?? [:] {
+            if let raw = UInt8(key), let channel = SpeakerChannel(rawValue: raw), let device = (value as? NSNumber)?.uint64Value {
+                assignments[channel] = device
+            }
+        }
+        channelAssignments = assignments
+    }
 
     func setRole(_ newRole: Role) {
         guard newRole != role else { return }
@@ -110,6 +159,7 @@ final class ClockSyncSession {
         case .leader:
             player.update(clockMap: .identity())
             startLeading()
+            startBrowsing()
         case .follower:
             startBrowsing()
         }
@@ -122,9 +172,12 @@ final class ClockSyncSession {
         player.update(clockMap: nil)
         player.update(playback: .stopped())
         connectedLeader = discovered.name
+        followerState = nil
         append("Following \(discovered.name)")
 
-        let follower = ClockSyncFollower(endpoint: discovered.endpoint)
+        resetRemoteSpeakers()
+
+        let follower = ClockSyncFollower(endpoint: discovered.endpoint, identity: identity)
         follower.onStateChange = { [weak self] state in
             DispatchQueue.main.async { self?.followerStateChanged(state) }
         }
@@ -136,6 +189,9 @@ final class ClockSyncSession {
         }
         follower.onAudioEndpoint = { [weak self] endpoint in
             DispatchQueue.main.async { self?.connectAudioStream(to: endpoint) }
+        }
+        follower.onSpeakers = { [weak self] layout, channel, switchTime in
+            DispatchQueue.main.async { self?.applyRemoteSpeakers(layout: layout, channel: channel, switchTime: switchTime) }
         }
         self.follower = follower
         follower.start()
@@ -174,7 +230,7 @@ final class ClockSyncSession {
     func play(source: UInt64) {
         guard role == .leader, let leader else { return }
         pendingStart = nil
-        guard source != PlaybackSource.metronome else {
+        guard !PlaybackSource.isGenerated(source) else {
             let state = PlaybackState(source: source, startLeaderTime: HostClock.now() + startLeadTime, startMediaTime: 0)
             player.update(playback: state)
             leader.setPlayback(state)
@@ -193,6 +249,7 @@ final class ClockSyncSession {
         player.update(playback: provisional)
         guard let stream = outgoingStream, stream.source == source, let audioServer else {
             leader.setPlayback(provisional)
+            scheduleEndOfTrack(provisional)
             return
         }
         let token = UUID()
@@ -207,6 +264,7 @@ final class ClockSyncSession {
                 let state = PlaybackState(source: source, startLeaderTime: HostClock.now() + self.startMargin, startMediaTime: 0)
                 self.player.update(playback: state)
                 leader.setPlayback(state)
+                self.scheduleEndOfTrack(state)
                 let total = Double(state.startLeaderTime - requested) / 1e9
                 var line = String(format: "Play %@: %d/%d followers ready, starts %.2fs after request", self.describe(source), readiness.ready, readiness.total, total)
                 if readiness.timedOut {
@@ -221,13 +279,28 @@ final class ClockSyncSession {
     func stopPlayback() {
         guard role == .leader, let leader else { return }
         pendingStart = nil
+        endOfTrackTask?.cancel()
         leader.setPlayback(.stopped())
         player.update(playback: .stopped())
         append("Stop")
     }
 
-    /// Reads a file's format and makes it available for playback. Followers must load the same file
-    /// to play along; it is matched by content, not name.
+    /// Stops the group once the file in `state` has played to its end.
+    private func scheduleEndOfTrack(_ state: PlaybackState) {
+        endOfTrackTask?.cancel()
+        guard let file = player.files[state.source] else { return }
+        // The leader's own clock is the group's timeline.
+        let end = state.startLeaderTime - state.startMediaTime + Int64(file.duration * 1e9)
+        endOfTrackTask = Task { [weak self] in
+            try? await Task.sleep(for: .nanoseconds(max(0, end - HostClock.now())) + .milliseconds(300))
+            guard !Task.isCancelled, let self, self.role == .leader, self.player.playback == state else { return }
+            self.append("Finished \(self.describe(state.source))")
+            self.stopPlayback()
+        }
+    }
+
+    /// Reads a file's format and makes it available for playback. Followers get it streamed
+    /// (or play their own copy, matched by content, if they loaded the same file).
     func loadTrack(from url: URL) {
         isLoadingTrack = true
         Task {
@@ -249,6 +322,7 @@ final class ClockSyncSession {
         switch source {
         case PlaybackSource.none: "nothing"
         case PlaybackSource.metronome: "metronome"
+        case PlaybackSource.channelTest: "channel test"
         default: player.files[source].map { "“\($0.name)”" } ?? String(format: "streamed file %016llx", source)
         }
     }
@@ -262,6 +336,122 @@ final class ClockSyncSession {
         } else {
             append("Leader stopped")
         }
+    }
+
+    // MARK: - Speakers
+
+    /// Leader only: spreads the music over the group as `layout` describes.
+    func setSpeakerLayout(_ layout: SpeakerLayout) {
+        guard layout != speakerLayout else { return }
+        speakerLayout = layout
+        UserDefaults.standard.set(Int(layout.rawValue), forKey: Self.layoutKey)
+        append("Speaker layout: \(layout.title)")
+        updateSpeakers()
+    }
+
+    /// Leader only: plays `channel` on `device` (nil: nobody). A device already playing another
+    /// channel trades places with the one it replaces.
+    func assign(_ device: UInt64?, to channel: SpeakerChannel) {
+        var assignments = channelAssignments
+        let previous = assignments[channel]
+        if let device, let other = assignments.first(where: { $0.value == device && $0.key != channel })?.key {
+            assignments[other] = previous
+        }
+        assignments[channel] = device
+        setAssignments(assignments)
+    }
+
+    /// Leader only: swaps the devices of a two-channel layout (left and right of a stereo pair).
+    func swapChannels() {
+        let channels = speakerLayout.channels
+        guard channels.count == 2 else { return }
+        var assignments = channelAssignments
+        (assignments[channels[0]], assignments[channels[1]]) = (assignments[channels[1]], assignments[channels[0]])
+        setAssignments(assignments)
+    }
+
+    func name(ofDevice id: UInt64) -> String? {
+        id == identity.id ? deviceName : members.first { $0.id == id }?.name
+    }
+
+    /// This device, or a follower that is reachable now.
+    func isDevicePresent(_ id: UInt64) -> Bool {
+        id == identity.id || members.contains { $0.id == id && $0.isActive }
+    }
+
+    private func setAssignments(_ assignments: [SpeakerChannel: UInt64]) {
+        guard assignments != channelAssignments else { return }
+        storeAssignments(assignments)
+        updateSpeakers()
+    }
+
+    private func storeAssignments(_ assignments: [SpeakerChannel: UInt64]) {
+        channelAssignments = assignments
+        let stored = Dictionary(uniqueKeysWithValues: assignments.map { (String($0.key.rawValue), NSNumber(value: $0.value)) })
+        UserDefaults.standard.set(stored, forKey: Self.assignmentsKey)
+    }
+
+    /// Fills channels that have no device in the group with the obvious choice: this device
+    /// first, then a follower if exactly one is left over. That pairs the common two-device
+    /// setup without asking, and keeps a pairing once made.
+    private func fillOpenChannels() {
+        var assignments = channelAssignments
+        let known = Set(members.map(\.id)).union([identity.id])
+        var open = speakerLayout.channels.filter { assignments[$0].map { !known.contains($0) } ?? true }
+        guard !open.isEmpty else { return }
+        let assigned = Set(speakerLayout.channels.compactMap { assignments[$0] })
+        if !assigned.contains(identity.id) {
+            assignments[open.removeFirst()] = identity.id
+        }
+        let spare = members.filter { $0.isActive && !assigned.contains($0.id) }
+        if open.count == 1, spare.count == 1 {
+            assignments[open[0]] = spare[0].id
+            append("Paired \(spare[0].name) as the \(open[0].title.lowercased()) speaker")
+        }
+        if assignments != channelAssignments {
+            storeAssignments(assignments)
+        }
+    }
+
+    /// Works out every device's channel and, if anything changed, tells the group. The switch
+    /// is scheduled slightly ahead so all devices make it at the same instant.
+    private func updateSpeakers() {
+        guard role == .leader, let leader else { return }
+        if !speakerLayout.channels.isEmpty, !isLayoutComplete {
+            fillOpenChannels()
+        }
+        var channels: [UInt64: SpeakerChannel] = [:]
+        if isLayoutComplete {
+            for channel in speakerLayout.channels {
+                if let device = channelAssignments[channel] {
+                    channels[device] = channel
+                }
+            }
+        }
+        guard channels != activeChannels || leaderAnnouncedLayout != speakerLayout else { return }
+        activeChannels = channels
+        leaderAnnouncedLayout = speakerLayout
+        let switchTime = HostClock.now() + channelSwitchLead
+        leader.setSpeakers(layout: speakerLayout, channels: channels, switchTime: switchTime)
+        player.setChannel(channels[identity.id] ?? .full, at: switchTime)
+        if !speakerLayout.channels.isEmpty {
+            let summary = speakerLayout.channels.map { "\($0.title): \(channelAssignments[$0].flatMap(name(ofDevice:)) ?? "–")" }
+            append(channels.isEmpty ? "Not all speakers present; everyone plays the full mix" : "Speakers: " + summary.joined(separator: ", "))
+        }
+    }
+
+    private func applyRemoteSpeakers(layout: SpeakerLayout, channel: SpeakerChannel, switchTime: Int64) {
+        guard role == .follower else { return }
+        remoteLayout = layout
+        if channel != player.channel {
+            append("This device now plays \(channel.title.lowercased())")
+        }
+        player.setChannel(channel, at: switchTime)
+    }
+
+    private func resetRemoteSpeakers() {
+        remoteLayout = .everywhere
+        player.setChannel(.full)
     }
 
     // MARK: - Leader
@@ -285,8 +475,16 @@ final class ClockSyncSession {
                 self.append("Followers: \(count)")
             }
         }
+        leader.onMembersChange = { [weak self] members in
+            DispatchQueue.main.async {
+                guard let self, self.role == .leader else { return }
+                self.members = members
+                self.updateSpeakers()
+            }
+        }
         self.leader = leader
         leader.start()
+        updateSpeakers()
 
         let server = AudioStreamServer()
         server.onPortChange = { [weak leader] port in
@@ -323,25 +521,54 @@ final class ClockSyncSession {
 
     // MARK: - Follower
 
+    /// Browses for leaders. A leader browses too, ignoring the results: browsing makes the
+    /// system ask for the Local Network privilege if it has not yet, and its state is the only
+    /// way to tell that the privilege was denied.
     private func startBrowsing() {
-        status = "Looking for leaders…"
+        let isFollower = role == .follower
+        if isFollower {
+            status = "Looking for leaders…"
+        }
         let browser = NWBrowser(for: .bonjour(type: ClockSyncNetwork.serviceType, domain: nil), using: ClockSyncNetwork.parameters())
-        browser.browseResultsChangedHandler = { [weak self] results, _ in
-            let leaders = results.compactMap { result -> DiscoveredLeader? in
-                guard case let .service(name, _, _, _) = result.endpoint else { return nil }
-                return DiscoveredLeader(name: name, endpoint: result.endpoint)
+        if isFollower {
+            browser.browseResultsChangedHandler = { [weak self] results, _ in
+                let leaders = results.compactMap { result -> DiscoveredLeader? in
+                    guard case let .service(name, _, _, _) = result.endpoint else { return nil }
+                    return DiscoveredLeader(name: name, endpoint: result.endpoint)
+                }
+                DispatchQueue.main.async { self?.updateDiscovered(leaders) }
             }
-            DispatchQueue.main.async { self?.updateDiscovered(leaders) }
         }
         browser.stateUpdateHandler = { [weak self] state in
-            guard case let .failed(error) = state else { return }
-            DispatchQueue.main.async {
-                self?.status = "Browse failed: \(error.localizedDescription)"
-                self?.append("Browse failed: \(error.localizedDescription)")
-            }
+            DispatchQueue.main.async { self?.browserStateChanged(state) }
         }
         self.browser = browser
         browser.start(queue: .main)
+    }
+
+    private func browserStateChanged(_ state: NWBrowser.State) {
+        switch state {
+        case .ready:
+            if isLocalNetworkDenied {
+                append("Local network access granted")
+            }
+            isLocalNetworkDenied = false
+        case let .waiting(error):
+            // kDNSServiceErr_PolicyDenied: the user turned off Local Network access for this app.
+            if case let .dns(code) = error, code == -65570 {
+                if !isLocalNetworkDenied {
+                    append("Local network access is denied; other devices cannot hear this one")
+                }
+                isLocalNetworkDenied = true
+            }
+        case let .failed(error):
+            if role == .follower {
+                status = "Browse failed: \(error.localizedDescription)"
+            }
+            append("Browse failed: \(error.localizedDescription)")
+        default:
+            break
+        }
     }
 
     private func updateDiscovered(_ leaders: [DiscoveredLeader]) {
@@ -363,6 +590,7 @@ final class ClockSyncSession {
     }
 
     private func followerStateChanged(_ state: ClockSyncFollower.State) {
+        followerState = state
         switch state {
         case .connecting:
             status = "Connecting to \(connectedLeader ?? "leader")…"
@@ -408,6 +636,7 @@ final class ClockSyncSession {
         player.onOutgoingStream = nil
         outgoingStream = nil
         pendingStart = nil
+        endOfTrackTask?.cancel()
         audioServer?.stop()
         audioServer = nil
         audioClient?.stop()
@@ -418,9 +647,15 @@ final class ClockSyncSession {
         follower = nil
         browser?.cancel()
         browser = nil
+        isLocalNetworkDenied = false
         followerCount = 0
+        members = []
+        activeChannels = [:]
+        leaderAnnouncedLayout = nil
+        resetRemoteSpeakers()
         discoveredLeaders = []
         connectedLeader = nil
+        followerState = nil
         latestRound = nil
         rounds = []
     }
@@ -431,15 +666,5 @@ final class ClockSyncSession {
             log.removeFirst(log.count - logLimit)
         }
         ClockSyncNetwork.logger.debug("\(text, privacy: .public)")
-    }
-
-    private static func makeDeviceName() -> String {
-        #if os(macOS)
-        let base = Host.current().localizedName ?? "Mac"
-        #else
-        let base = UIDevice.current.model
-        #endif
-        let suffix = String(UInt16.random(in: .min ... .max), radix: 16, uppercase: true)
-        return "\(base) \(suffix)"
     }
 }

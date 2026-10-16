@@ -27,7 +27,7 @@ nonisolated enum ClockSyncNetwork {
 }
 
 /// Advertises this device's host clock over Bonjour, answers every ping with a pong, and tells
-/// followers what to play.
+/// followers what to play and which speaker channel each of them plays.
 ///
 /// The leader keeps no per-follower sync state; all estimation happens on the followers. If the
 /// listener fails (e.g. the network went away while the app was in the background) it is
@@ -40,6 +40,14 @@ nonisolated final class ClockSyncLeader: @unchecked Sendable {
         case stopped
     }
 
+    /// A follower that introduced itself with a hello.
+    struct Member: Sendable, Equatable, Identifiable {
+        var id: UInt64
+        var name: String
+        /// Heard from within `activeWindow`. Members stay listed (inactive) until pruned.
+        var isActive: Bool
+    }
+
     /// Identifies the leader's timeline. It changes per run and whenever this device slept (its
     /// host clock stood still meanwhile), so followers know to discard their estimate.
     private var session = UInt64.random(in: .min ... .max)
@@ -47,6 +55,8 @@ nonisolated final class ClockSyncLeader: @unchecked Sendable {
 
     var onStateChange: (@Sendable (State) -> Void)?
     var onFollowersChange: (@Sendable (Int) -> Void)?
+    /// Called whenever the set of members, or whether each is active, changes.
+    var onMembersChange: (@Sendable ([Member]) -> Void)?
     /// Called when playback was stopped because this device slept and its clock jumped.
     var onPlaybackReset: (@Sendable () -> Void)?
 
@@ -62,6 +72,16 @@ nonisolated final class ClockSyncLeader: @unchecked Sendable {
     private var playbackRevision: UInt32 = 0
     private var audioPort: UInt16?
     private var rebroadcastTimer: DispatchSourceTimer?
+    /// The device behind each connection, from its hellos.
+    private var devices: [ObjectIdentifier: (id: UInt64, name: String)] = [:]
+    private var reportedMembers: [Member] = []
+    private var layout = SpeakerLayout.everywhere
+    private var channels: [UInt64: SpeakerChannel] = [:]
+    private var channelSwitchTime: Int64 = 0
+    private var speakersRevision: UInt32 = 0
+    /// A follower silent for longer than this counts as gone for its speaker channel (it is
+    /// only dropped altogether after 10 s). Followers ping at least once a second.
+    private let activeWindow: Int64 = 3_000_000_000
 
     init(name: String) {
         self.name = name
@@ -80,6 +100,7 @@ nonisolated final class ClockSyncLeader: @unchecked Sendable {
                 self?.checkForSleep()
                 self?.pruneSilentFollowers()
                 self?.broadcastPlayback()
+                self?.reportMembers()
             }
             timer.resume()
             rebroadcastTimer = timer
@@ -98,6 +119,8 @@ nonisolated final class ClockSyncLeader: @unchecked Sendable {
             }
             connections = [:]
             lastHeard = [:]
+            devices = [:]
+            reportMembers()
             onFollowersChange?(0)
             onStateChange?(.stopped)
         }
@@ -145,6 +168,7 @@ nonisolated final class ClockSyncLeader: @unchecked Sendable {
         for (id, heard) in lastHeard where heard < cutoff {
             connections.removeValue(forKey: id)?.cancel()
             lastHeard.removeValue(forKey: id)
+            devices.removeValue(forKey: id)
             onFollowersChange?(connections.count)
         }
     }
@@ -166,10 +190,53 @@ nonisolated final class ClockSyncLeader: @unchecked Sendable {
         }
     }
 
-    private func broadcastPlayback() {
-        for connection in connections.values {
-            sendPlayback(on: connection)
+    /// Sets the group's speaker layout and each device's channel (devices not listed play the
+    /// full mix), taking effect at leader time `switchTime`. Sent to every follower now and
+    /// repeated every second until it changes.
+    func setSpeakers(layout: SpeakerLayout, channels: [UInt64: SpeakerChannel], switchTime: Int64) {
+        queue.async { [self] in
+            self.layout = layout
+            self.channels = channels
+            channelSwitchTime = switchTime
+            speakersRevision &+= 1
+            for (id, connection) in connections {
+                sendSpeakers(on: connection, id: id)
+            }
         }
+    }
+
+    private func broadcastPlayback() {
+        for (id, connection) in connections {
+            sendPlayback(on: connection)
+            sendSpeakers(on: connection, id: id)
+        }
+    }
+
+    /// Sends the follower behind `connection` its channel, once it has said who it is.
+    private func sendSpeakers(on connection: NWConnection, id: ObjectIdentifier) {
+        guard let device = devices[id] else { return }
+        let message = ClockSyncMessage.speakers(
+            revision: speakersRevision,
+            session: session,
+            layout: layout,
+            channel: channels[device.id] ?? .full,
+            switchLeaderTime: channelSwitchTime
+        )
+        connection.send(content: message.encoded(), completion: .idempotent)
+    }
+
+    private func reportMembers() {
+        let cutoff = HostClock.now() - activeWindow
+        var members: [UInt64: Member] = [:]
+        for (id, device) in devices {
+            // A follower that reconnected briefly has two connections; either one counts.
+            let isActive = (lastHeard[id] ?? .min) >= cutoff || members[device.id]?.isActive == true
+            members[device.id] = Member(id: device.id, name: device.name, isActive: isActive)
+        }
+        let sorted = members.values.sorted { ($0.name, $0.id) < ($1.name, $1.id) }
+        guard sorted != reportedMembers else { return }
+        reportedMembers = sorted
+        onMembersChange?(sorted)
     }
 
     /// Sends the playback state, and the audio stream's port along with it.
@@ -211,8 +278,10 @@ nonisolated final class ClockSyncLeader: @unchecked Sendable {
             case .failed, .cancelled:
                 connection?.cancel()
                 lastHeard.removeValue(forKey: id)
+                devices.removeValue(forKey: id)
                 if connections.removeValue(forKey: id) != nil {
                     onFollowersChange?(connections.count)
+                    reportMembers()
                 }
             default:
                 break
@@ -233,15 +302,37 @@ nonisolated final class ClockSyncLeader: @unchecked Sendable {
             if connections[id] != nil {
                 lastHeard[id] = t1
             }
-            if let content, case let .ping(sequence, t0)? = ClockSyncMessage(content) {
+            switch content.flatMap(ClockSyncMessage.init) {
+            case let .ping(sequence, t0):
                 // Stamp as late as possible; the turnaround (t2 - t1) is subtracted out exactly.
                 let t2 = HostClock.now()
                 let pong = ClockSyncMessage.pong(sequence: sequence, session: session, t0: t0, t1: t1, t2: t2)
                 connection.send(content: pong.encoded(), completion: .idempotent)
+            case let .hello(device, name):
+                handleHello(device: device, name: name, connection: connection)
+            default:
+                break
             }
             if error == nil {
                 receive(on: connection)
             }
         }
+    }
+
+    /// Answers every hello with the full state (playback, audio port, speaker channel).
+    ///
+    /// The periodic broadcast alone is not enough: on macOS, an app without the Local Network
+    /// privilege may not send UDP to local addresses on its own, yet its replies to incoming
+    /// datagrams (like pongs) still get through. Followers say hello every round, so answering
+    /// them keeps every follower current within a second even then.
+    private func handleHello(device: UInt64, name: String, connection: NWConnection) {
+        let id = ObjectIdentifier(connection)
+        guard connections[id] != nil else { return }
+        if devices[id]?.id != device || devices[id]?.name != name {
+            devices[id] = (device, name)
+            reportMembers()
+        }
+        sendPlayback(on: connection)
+        sendSpeakers(on: connection, id: id)
     }
 }

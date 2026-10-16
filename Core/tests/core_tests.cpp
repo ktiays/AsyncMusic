@@ -212,6 +212,64 @@ void rendererTracksDrift() {
     }
 }
 
+/// A stereo pair's left device plays the left channel on both outputs, then switches to the
+/// right channel exactly when the scheduled leader time is heard.
+void rendererRoutesChannels() {
+    const double rate = 48000;
+    const int frames = 480;
+    Ref<StreamBuffer> buffer = Ref<StreamBuffer>::adopt(StreamBuffer::create(rate, 10 * 48000, 0));
+    std::vector<float> left(10 * 48000, 0.5f), right(10 * 48000, -0.25f);
+    buffer->append(left.data(), right.data(), 10 * 48000);
+
+    Ref<SyncedRenderer> renderer = Ref<SyncedRenderer>::adopt(SyncedRenderer::create());
+    renderer->setClockMap(ClockMap{0, 0, 0});
+    renderer->setPlayback(PlaybackState{20, 0, 0}, 1, RenderSourceKind::stream, buffer.get());
+    renderer->setChannelMix(ChannelMix::forChannel(SpeakerChannel::left), 0);
+    const int64_t switchAt = 2'000'000'000;
+    renderer->setChannelMix(ChannelMix::forChannel(SpeakerChannel::right), switchAt);
+
+    std::vector<float> outLeft(frames), outRight(frames);
+    const auto cycle = static_cast<int64_t>(frames * 1e9 / rate);
+    bool beforeOK = true, afterOK = true;
+    int rampCycles = 0;
+    for (int64_t host = 100'000'000; host < 4'000'000'000; host += cycle) {
+        renderer->render(true, host, frames, rate, outLeft.data(), outRight.data());
+        const float l = outLeft[frames - 1], r = outRight[frames - 1];
+        if (host + cycle <= switchAt) {
+            beforeOK = beforeOK && std::abs(l - 0.5f) < 1e-4f && std::abs(r - 0.5f) < 1e-4f;
+        } else if (host >= switchAt) {
+            afterOK = afterOK && std::abs(l + 0.25f) < 1e-4f && std::abs(r + 0.25f) < 1e-4f;
+        } else {
+            ++rampCycles;
+        }
+    }
+    CHECK(beforeOK, "left channel on both outputs before the switch");
+    CHECK(afterOK, "right channel on both outputs after the switch");
+    CHECK(rampCycles <= 1, "switch spans %d cycles", rampCycles);
+
+    // Full mix leaves the source untouched.
+    renderer->setChannelMix(ChannelMix::forChannel(SpeakerChannel::full), 0);
+    renderer->render(true, 4'000'000'000, frames, rate, outLeft.data(), outRight.data());
+    renderer->render(true, 4'000'000'000 + cycle, frames, rate, outLeft.data(), outRight.data());
+    CHECK(std::abs(outLeft[0] - 0.5f) < 1e-4f && std::abs(outRight[0] + 0.25f) < 1e-4f, "full mix %.3f %.3f", outLeft[0], outRight[0]);
+}
+
+void channelTestAlternates() {
+    float leftPeak = 0, rightPeak = 0, leaked = 0;
+    for (int i = 0; i < 48000; ++i) {
+        const double seconds = i / 48000.0;
+        const StereoSample sample = channelTestSample(seconds);
+        const bool rightBeat = std::fmod(seconds, 1.0) >= 0.5;
+        (rightBeat ? rightPeak : leftPeak) = std::max(rightBeat ? rightPeak : leftPeak, std::abs(rightBeat ? sample.right : sample.left));
+        leaked = std::max(leaked, std::abs(rightBeat ? sample.left : sample.right));
+    }
+    CHECK(leftPeak > 0.3f && rightPeak > 0.3f, "peaks %.3f %.3f", leftPeak, rightPeak);
+    CHECK(leaked == 0, "other channel must be silent, got %.3f", leaked);
+    CHECK(speakerLayoutChannelCount(SpeakerLayout::stereoPair) == 2, "stereo pair has two channels");
+    CHECK(speakerLayoutChannel(SpeakerLayout::stereoPair, 0) == SpeakerChannel::left
+        && speakerLayoutChannel(SpeakerLayout::stereoPair, 1) == SpeakerChannel::right, "stereo pair order");
+}
+
 /// Feeds noise into a ring in 4096-frame chunks, paced like the file feeder, and checks every
 /// rendered sample against the source while the ring wraps around.
 void streamPlaysBitExact(int64_t joinAtMedia) {
@@ -333,6 +391,8 @@ void protocolMatchesGoldenBytes() {
         {ClockSyncMessage::makePong(7, 0xDEADBEEF00000001ull, 1, 2, 3).encode(), "534101020700000001000000efbeadde010000000000000002000000000000000300000000000000"},
         {ClockSyncMessage::makePlayback(9, 0xABCD, state).encode(), "5341010309000000cdab0000000000008877665544332211cb04fb711f010000d6ffffffffffffff"},
         {ClockSyncMessage::makeAudioPort(0x55, 50829).encode(), "534101040000000055000000000000008dc6"},
+        {ClockSyncMessage::makeHello(0x0102, Bytes{'a', 'b'}).encode(), "53410105000000000201000000000000026162"},
+        {ClockSyncMessage::makeSpeakers(3, 0xAB, SpeakerLayout::stereoPair, SpeakerChannel::right, -1).encode(), "5341010603000000ab000000000000000102ffffffffffffffff"},
         {AudioStreamMessage::makeStreamStart(0x0A0B, 0x0C0D, 44100, 12345, AudioStreamCodec::alac, Bytes{1, 2, 3}).framed(), "27000000010b0a0000000000000d0c000000000000000000008088e5403930000000000000010300010203"},
         {AudioStreamMessage::makeAudio(1, -3, 2, Bytes{9, 8, 7, 6, 5, 4, 3, 2}).framed(), "1d000000020100000000000000fdffffffffffffff020000000908070605040302"},
         {AudioStreamMessage::makeBufferReport(0xFFFFFFFFFFFFFFFFull, int64_t{1} << 40).framed(), "1100000003ffffffffffffffff0000000000010000"},
@@ -356,6 +416,18 @@ void protocolRoundTrips() {
     CHECK(ClockSyncMessage::decode(bytes.data(), bytes.size(), message) && message.port == 65535, "audio port");
     bytes[0] = 0;
     CHECK(!ClockSyncMessage::decode(bytes.data(), bytes.size(), message), "bad magic rejected");
+
+    bytes = ClockSyncMessage::makeHello(42, Bytes(300, 'x')).encode();
+    CHECK(ClockSyncMessage::decode(bytes.data(), bytes.size(), message), "hello decode");
+    CHECK(message.type == ClockSyncMessage::Type::hello && message.device == 42 && message.name.size() == 255, "hello fields, name cut to 255");
+    bytes.pop_back();
+    CHECK(!ClockSyncMessage::decode(bytes.data(), bytes.size(), message), "truncated hello rejected");
+    bytes = ClockSyncMessage::makeSpeakers(7, 8, SpeakerLayout::stereoPair, SpeakerChannel::left, 123).encode();
+    CHECK(ClockSyncMessage::decode(bytes.data(), bytes.size(), message), "speakers decode");
+    CHECK(message.sequence == 7 && message.session == 8 && message.layout == SpeakerLayout::stereoPair && message.channel == SpeakerChannel::left
+        && message.switchLeaderTime == 123, "speakers fields");
+    bytes[16] = 9;  // a layout from the future
+    CHECK(!ClockSyncMessage::decode(bytes.data(), bytes.size(), message), "unknown layout rejected");
 
     const Bytes framed = AudioStreamMessage::makeStreamStart(1, 2, 48000, -5, AudioStreamCodec::pcm16, Bytes{}).framed();
     const int64_t length = AudioStreamMessage::bodyLength(framed.data(), AudioStreamMessage::kHeaderLength);
@@ -415,6 +487,8 @@ int main() {
     run("estimator: recovers from leader jump", estimatorRecoversFromLeaderJump);
     run("renderer: starts on time", rendererStartsOnTime);
     run("renderer: tracks DAC drift", rendererTracksDrift);
+    run("renderer: routes channels", rendererRoutesChannels);
+    run("renderer: channel test", channelTestAlternates);
     run("stream: bit-exact from start", [] { streamPlaysBitExact(-1); });
     run("stream: bit-exact late join", [] { streamPlaysBitExact(7'300'000'000); });
     run("stream: gaps fade", streamGapsFade);

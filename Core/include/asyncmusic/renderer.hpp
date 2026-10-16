@@ -12,6 +12,7 @@
 #include "config.hpp"
 #include "playback.hpp"
 #include "ref_counted.hpp"
+#include "speakers.hpp"
 #include "stream_buffer.hpp"
 
 AM_ASSUME_NONNULL_BEGIN
@@ -21,6 +22,8 @@ namespace asyncmusic {
 enum class AM_CLOSED_ENUM RenderSourceKind : uint8_t {
     silence,
     metronome,
+    /// The metronome, alternating between the left channel and the right one every beat.
+    channelTest,
     stream,
 };
 
@@ -40,6 +43,8 @@ struct RenderStats {
     double bufferedSeconds = 0;
     /// Times stream data ran out mid-playback (including once at the end of a file).
     int gaps = 0;
+    /// Recent peak of the output signal (0...1, decaying), to tell playing silence from sound.
+    double outputPeak = 0;
 };
 
 struct RendererConfiguration {
@@ -58,6 +63,9 @@ struct RendererConfiguration {
 /// signal at the same media instant regardless of sample rate. Sharp attacks make any timing
 /// difference between devices easy to hear as a flam.
 float metronomeSample(double seconds);
+/// The channel test signal: the metronome's clicks, on the left channel on even beats and on
+/// the right one on odd beats (the right one a fifth higher, so the sides are easy to tell).
+StereoSample channelTestSample(double seconds);
 
 class SyncedRenderer;
 }  // namespace asyncmusic
@@ -100,6 +108,10 @@ public:
     /// `stream`: the caller must keep it alive until the render thread has picked up a later
     /// state, in practice by releasing replaced buffers only after a short delay.
     void setPlayback(const PlaybackState& playback, int generation, RenderSourceKind kind, StreamBuffer* AM_NULLABLE stream);
+    /// Routes the source's channels to the output from leader time `fromLeaderTime` on (by
+    /// when the sound is heard), so devices of a group switch channels at the same instant.
+    /// The switch ramps over one render cycle. Until then the previously set mix applies.
+    void setChannelMix(const ChannelMix& mix, int64_t fromLeaderTime);
 
     RenderStats latestStats() const;
 
@@ -120,9 +132,13 @@ private:
         RenderSourceKind kind = RenderSourceKind::silence;
         StreamBuffer* AM_NULLABLE stream = nullptr;
         int64_t presentationDelay = 0;
+        ChannelMix mix;
+        ChannelMix mixBefore;
+        int64_t mixFromLeaderTime = 0;
     };
 
     void renderStream(const StreamBuffer& buffer, double sourceRate, double increment, int frameCount, double outputRate, float* left, float* right);
+    void applyMix(const ChannelMix& target, int frameCount, float* left, float* right);
     void publishStats();
 
     const RendererConfiguration configuration_;
@@ -142,6 +158,8 @@ private:
     bool inStreamGap_ = false;
     /// Integral term of the rate controller: the learned steady-state rate error.
     double integral_ = 0;
+    /// The channel mix applied at the end of the last cycle.
+    ChannelMix appliedMix_;
     RenderStats stats_;
 } SWIFT_SHARED_REFERENCE(asyncmusic_renderer_retain, asyncmusic_renderer_release);
 

@@ -44,8 +44,8 @@ nonisolated final class MediaFile: @unchecked Sendable {
             let hash = digest.withUnsafeBytes { $0.loadUnaligned(as: UInt64.self) }
             let file = try AVAudioFile(forReading: url)
             return MediaFile(
-                // Keep clear of the reserved IDs (none, metronome).
-                id: max(hash, PlaybackSource.metronome + 1),
+                // Keep clear of the IDs reserved for generated sources.
+                id: max(hash, PlaybackSource.firstFile),
                 url: url,
                 sampleRate: file.processingFormat.sampleRate,
                 frameCount: file.length,
