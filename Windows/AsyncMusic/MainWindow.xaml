@@ -43,177 +43,201 @@
 
         <!-- Welcome: host, or join someone else's group. -->
         <ScrollViewer x:Name="welcomePage" Grid.Row="1">
-            <StackPanel Style="{StaticResource ReadableColumnStyle}" Spacing="28">
-                <StackPanel Spacing="12" Margin="0,24,0,0">
-                    <FontIcon Glyph="&#xE7F5;" FontSize="56" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
-                    <TextBlock Text="AsyncMusic" Style="{StaticResource TitleLargeTextBlockStyle}" HorizontalAlignment="Center" />
-                    <TextBlock Text="Play music in perfect sync across your devices — or split one song into true stereo over two of them."
-                               Style="{StaticResource SecondaryBodyStyle}" TextAlignment="Center" />
-                </StackPanel>
+            <!-- A readable column: up to ReadableColumnWidth wide, centered. -->
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="1000*" MaxWidth="{StaticResource ReadableColumnWidth}" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="1" Style="{StaticResource ReadableColumnStyle}" Spacing="28">
+                    <StackPanel Spacing="12" Margin="0,24,0,0">
+                        <FontIcon Glyph="&#xE7F5;" FontSize="56" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                        <TextBlock Text="AsyncMusic" Style="{StaticResource TitleLargeTextBlockStyle}" HorizontalAlignment="Center" />
+                        <TextBlock Text="Play music in perfect sync across your devices — or split one song into true stereo over two of them."
+                                   Style="{StaticResource SecondaryBodyStyle}" TextAlignment="Center" />
+                    </StackPanel>
 
-                <StackPanel Spacing="12">
-                    <Button Style="{StaticResource CardButtonStyle}" Click="OnJoin" AutomationProperties.Name="Join as Speaker">
-                        <Grid ColumnSpacing="14">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="Auto" />
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
-                            <Border Style="{StaticResource IconTileStyle}">
-                                <FontIcon Glyph="&#xE7F5;" FontSize="20" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
-                            </Border>
-                            <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
-                                <TextBlock Text="Join as Speaker" Style="{StaticResource BodyStrongTextBlockStyle}" />
-                                <TextBlock Text="Play along with a host on the same Wi-Fi." Style="{StaticResource SecondaryCaptionStyle}" />
-                            </StackPanel>
-                            <FontIcon Grid.Column="2" Glyph="&#xE76C;" FontSize="12" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
-                        </Grid>
-                    </Button>
-                    <Button Style="{StaticResource CardButtonStyle}" IsEnabled="False" AutomationProperties.Name="Host Music">
-                        <Grid ColumnSpacing="14">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="Auto" />
-                                <ColumnDefinition Width="*" />
-                            </Grid.ColumnDefinitions>
-                            <Border Style="{StaticResource IconTileStyle}">
-                                <FontIcon Glyph="&#xE768;" FontSize="20" Foreground="{ThemeResource TextFillColorDisabledBrush}" />
-                            </Border>
-                            <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
-                                <TextBlock Text="Host Music" Style="{StaticResource BodyStrongTextBlockStyle}" />
-                                <TextBlock Text="Coming soon on Windows. Host from a Mac, iPhone or iPad for now." Style="{StaticResource SecondaryCaptionStyle}" />
-                            </StackPanel>
-                        </Grid>
-                    </Button>
-                </StackPanel>
+                    <StackPanel Spacing="12">
+                        <Button Style="{StaticResource CardButtonStyle}" Click="OnJoin" AutomationProperties.Name="Join as Speaker">
+                            <Grid ColumnSpacing="14">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <Border Style="{StaticResource IconTileStyle}">
+                                    <FontIcon Glyph="&#xE7F5;" FontSize="20" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                                </Border>
+                                <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
+                                    <TextBlock Text="Join as Speaker" Style="{StaticResource BodyStrongTextBlockStyle}" />
+                                    <TextBlock Text="Play along with a host on the same Wi-Fi." Style="{StaticResource SecondaryCaptionStyle}" />
+                                </StackPanel>
+                                <FontIcon Grid.Column="2" Glyph="&#xE76C;" FontSize="12" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                            </Grid>
+                        </Button>
+                        <Button Style="{StaticResource CardButtonStyle}" IsEnabled="False" AutomationProperties.Name="Host Music">
+                            <Grid ColumnSpacing="14">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Border Style="{StaticResource IconTileStyle}">
+                                    <FontIcon Glyph="&#xE768;" FontSize="20" Foreground="{ThemeResource TextFillColorDisabledBrush}" />
+                                </Border>
+                                <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
+                                    <TextBlock Text="Host Music" Style="{StaticResource BodyStrongTextBlockStyle}" />
+                                    <TextBlock Text="Coming soon on Windows. Host from a Mac, iPhone or iPad for now." Style="{StaticResource SecondaryCaptionStyle}" />
+                                </StackPanel>
+                            </Grid>
+                        </Button>
+                    </StackPanel>
 
-                <TextBlock x:Name="deviceNameText" Style="{StaticResource SecondaryCaptionStyle}" TextAlignment="Center" />
-            </StackPanel>
+                    <TextBlock x:Name="deviceNameText" Style="{StaticResource SecondaryCaptionStyle}" TextAlignment="Center" />
+                </StackPanel>
+            </Grid>
         </ScrollViewer>
 
         <!-- Join: pick a host nearby, then show what this device plays for it. -->
         <ScrollViewer x:Name="joinPage" Grid.Row="1" Visibility="Collapsed">
-            <StackPanel Style="{StaticResource ReadableColumnStyle}" Spacing="16">
-                <StackPanel x:Name="hostListPanel" Style="{StaticResource CardStyle}">
-                    <TextBlock Text="Nearby Hosts" Style="{StaticResource BodyStrongTextBlockStyle}" />
-                    <StackPanel x:Name="searchingPanel" Spacing="8">
-                        <StackPanel Orientation="Horizontal" Spacing="10">
-                            <ProgressRing IsActive="True" Width="16" Height="16" />
-                            <TextBlock x:Name="searchingText" Text="Looking for hosts…" Style="{StaticResource SecondaryBodyStyle}" />
+            <!-- A readable column: up to ReadableColumnWidth wide, centered. -->
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="1000*" MaxWidth="{StaticResource ReadableColumnWidth}" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="1" Style="{StaticResource ReadableColumnStyle}" Spacing="16">
+                    <StackPanel x:Name="hostListPanel" Style="{StaticResource CardStyle}">
+                        <TextBlock Text="Nearby Hosts" Style="{StaticResource BodyStrongTextBlockStyle}" />
+                        <StackPanel x:Name="searchingPanel" Spacing="8">
+                            <StackPanel Orientation="Horizontal" Spacing="10">
+                                <ProgressRing IsActive="True" Width="16" Height="16" />
+                                <TextBlock x:Name="searchingText" Text="Looking for hosts…" Style="{StaticResource SecondaryBodyStyle}" />
+                            </StackPanel>
+                            <TextBlock Text="On the device with the music, open AsyncMusic and choose Host Music. Both devices need to be on the same network."
+                                       Style="{StaticResource SecondaryCaptionStyle}" />
                         </StackPanel>
-                        <TextBlock Text="On the device with the music, open AsyncMusic and choose Host Music. Both devices need to be on the same network."
-                                   Style="{StaticResource SecondaryCaptionStyle}" />
+                        <StackPanel x:Name="hostList" Spacing="4" />
                     </StackPanel>
-                    <StackPanel x:Name="hostList" Spacing="4" />
-                </StackPanel>
 
-                <StackPanel x:Name="speakerPanel" Spacing="16" Visibility="Collapsed">
-                    <StackPanel Spacing="14" Padding="0,12">
-                        <Grid HorizontalAlignment="Center">
-                            <Ellipse x:Name="badgeCircle" Width="120" Height="120" />
-                            <TextBlock x:Name="badgeText" FontSize="40" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center" />
-                            <Border x:Name="playingBadge" Width="36" Height="36" CornerRadius="18" HorizontalAlignment="Right" VerticalAlignment="Bottom"
-                                    Margin="0,0,-6,-6" Background="{ThemeResource SolidBackgroundFillColorBaseBrush}" Visibility="Collapsed">
-                                <FontIcon Glyph="&#xE995;" FontSize="16" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
-                            </Border>
-                        </Grid>
-                        <TextBlock x:Name="speakerTitle" Style="{StaticResource TitleTextBlockStyle}" HorizontalAlignment="Center" />
-                        <TextBlock x:Name="speakerExplanation" Style="{StaticResource SecondaryBodyStyle}" TextAlignment="Center" />
+                    <StackPanel x:Name="speakerPanel" Spacing="16" Visibility="Collapsed">
+                        <StackPanel Spacing="14" Padding="0,12">
+                            <Grid HorizontalAlignment="Center">
+                                <Ellipse x:Name="badgeCircle" Width="120" Height="120" />
+                                <TextBlock x:Name="badgeText" FontSize="40" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                <Border x:Name="playingBadge" Width="36" Height="36" CornerRadius="18" HorizontalAlignment="Right" VerticalAlignment="Bottom"
+                                        Margin="0,0,-6,-6" Background="{ThemeResource SolidBackgroundFillColorBaseBrush}" Visibility="Collapsed">
+                                    <FontIcon Glyph="&#xE995;" FontSize="16" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                                </Border>
+                            </Grid>
+                            <TextBlock x:Name="speakerTitle" Style="{StaticResource TitleTextBlockStyle}" HorizontalAlignment="Center" />
+                            <TextBlock x:Name="speakerExplanation" Style="{StaticResource SecondaryBodyStyle}" TextAlignment="Center" />
+                        </StackPanel>
+                        <StackPanel Style="{StaticResource CardStyle}">
+                            <Grid ColumnSpacing="12">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="Host" />
+                                <TextBlock x:Name="hostValue" Grid.Column="1" Style="{StaticResource SecondaryBodyStyle}" />
+                            </Grid>
+                            <Rectangle Style="{StaticResource DividerStyle}" />
+                            <Grid ColumnSpacing="12">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="Sync" />
+                                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6">
+                                    <Ellipse x:Name="syncDot" Width="8" Height="8" VerticalAlignment="Center" />
+                                    <TextBlock x:Name="syncValue" Style="{StaticResource SecondaryBodyStyle}" />
+                                </StackPanel>
+                            </Grid>
+                            <Rectangle Style="{StaticResource DividerStyle}" />
+                            <Grid ColumnSpacing="12">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="Playback" />
+                                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6">
+                                    <Ellipse x:Name="playbackDot" Width="8" Height="8" VerticalAlignment="Center" />
+                                    <TextBlock x:Name="playbackValue" Style="{StaticResource SecondaryBodyStyle}" />
+                                </StackPanel>
+                            </Grid>
+                        </StackPanel>
+                        <InfoBar x:Name="outputInfoBar" IsOpen="False" IsClosable="False" Severity="Error" Title="Audio output" />
                     </StackPanel>
-                    <StackPanel Style="{StaticResource CardStyle}">
-                        <Grid ColumnSpacing="12">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Text="Host" />
-                            <TextBlock x:Name="hostValue" Grid.Column="1" Style="{StaticResource SecondaryBodyStyle}" />
-                        </Grid>
-                        <Rectangle Style="{StaticResource DividerStyle}" />
-                        <Grid ColumnSpacing="12">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Text="Sync" />
-                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6">
-                                <Ellipse x:Name="syncDot" Width="8" Height="8" VerticalAlignment="Center" />
-                                <TextBlock x:Name="syncValue" Style="{StaticResource SecondaryBodyStyle}" />
-                            </StackPanel>
-                        </Grid>
-                        <Rectangle Style="{StaticResource DividerStyle}" />
-                        <Grid ColumnSpacing="12">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Text="Playback" />
-                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6">
-                                <Ellipse x:Name="playbackDot" Width="8" Height="8" VerticalAlignment="Center" />
-                                <TextBlock x:Name="playbackValue" Style="{StaticResource SecondaryBodyStyle}" />
-                            </StackPanel>
-                        </Grid>
-                    </StackPanel>
-                    <InfoBar x:Name="outputInfoBar" IsOpen="False" IsClosable="False" Severity="Error" Title="Audio output" />
-                </StackPanel>
 
-                <Button x:Name="leaveButton" Content="Cancel" HorizontalAlignment="Center" Margin="0,8,0,0" Click="OnLeave" />
-            </StackPanel>
+                    <Button x:Name="leaveButton" Content="Cancel" HorizontalAlignment="Center" Margin="0,8,0,0" Click="OnLeave" />
+                </StackPanel>
+            </Grid>
         </ScrollViewer>
 
         <!-- Diagnostics: sync, streaming and output in detail. Rows are filled in from code. -->
         <ScrollViewer x:Name="diagnosticsPage" Grid.Row="1" Visibility="Collapsed">
-            <StackPanel Style="{StaticResource ReadableColumnStyle}" Spacing="16">
-                <StackPanel x:Name="generalSection" Style="{StaticResource CardStyle}" />
-                <StackPanel x:Name="estimateSection" Style="{StaticResource CardStyle}" />
-                <StackPanel x:Name="chartsSection" Style="{StaticResource CardStyle}">
-                    <TextBlock Text="Residual vs. fitted line (µs)" Style="{StaticResource BodyStrongTextBlockStyle}" />
-                    <Canvas x:Name="residualChart" Height="160" />
-                    <TextBlock Text="Best round trip per round (ms)" Style="{StaticResource BodyStrongTextBlockStyle}" Margin="0,8,0,0" />
-                    <Canvas x:Name="roundTripChart" Height="120" />
+            <!-- A readable column: up to ReadableColumnWidth wide, centered. -->
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="1000*" MaxWidth="{StaticResource ReadableColumnWidth}" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="1" Style="{StaticResource ReadableColumnStyle}" Spacing="16">
+                    <StackPanel x:Name="generalSection" Style="{StaticResource CardStyle}" />
+                    <StackPanel x:Name="estimateSection" Style="{StaticResource CardStyle}" />
+                    <StackPanel x:Name="chartsSection" Style="{StaticResource CardStyle}">
+                        <TextBlock Text="Residual vs. fitted line (µs)" Style="{StaticResource BodyStrongTextBlockStyle}" />
+                        <Canvas x:Name="residualChart" Height="160" />
+                        <TextBlock Text="Best round trip per round (ms)" Style="{StaticResource BodyStrongTextBlockStyle}" Margin="0,8,0,0" />
+                        <Canvas x:Name="roundTripChart" Height="120" />
+                    </StackPanel>
+                    <StackPanel x:Name="playbackSection" Style="{StaticResource CardStyle}" />
+                    <StackPanel x:Name="outputSection" Style="{StaticResource CardStyle}">
+                        <StackPanel x:Name="outputRows" Spacing="12" />
+                        <Rectangle Style="{StaticResource DividerStyle}" />
+                        <Grid ColumnSpacing="12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="Extra delay" />
+                            <TextBlock x:Name="offsetValue" Grid.Column="1" Style="{StaticResource SecondaryBodyStyle}" />
+                        </Grid>
+                        <Slider x:Name="offsetSlider" Minimum="-100" Maximum="300" StepFrequency="0.5" ValueChanged="OnOffsetChanged" />
+                        <TextBlock Text="Increase if this device sounds late compared with the others; decrease if it sounds early."
+                                   Style="{StaticResource SecondaryCaptionStyle}" />
+                    </StackPanel>
+                    <StackPanel Style="{StaticResource CardStyle}">
+                        <TextBlock Text="Device Name" Style="{StaticResource BodyStrongTextBlockStyle}" />
+                        <Grid ColumnSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBox x:Name="nameBox" />
+                            <Button Grid.Column="1" Content="Save" Click="OnRename" />
+                        </Grid>
+                        <TextBlock Text="How hosts list this device. Leave empty to use the computer's name. Takes effect the next time you join."
+                                   Style="{StaticResource SecondaryCaptionStyle}" />
+                    </StackPanel>
+                    <StackPanel Style="{StaticResource CardStyle}">
+                        <Grid ColumnSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="Log" Style="{StaticResource BodyStrongTextBlockStyle}" VerticalAlignment="Center" />
+                            <Button Grid.Column="1" Content="Copy Report" Click="OnCopyReport" />
+                            <Button Grid.Column="2" Content="Clear" Click="OnClearLog" />
+                        </Grid>
+                        <TextBlock x:Name="logText" FontFamily="Cascadia Mono, Consolas" FontSize="12" IsTextSelectionEnabled="True" TextWrapping="Wrap" />
+                    </StackPanel>
                 </StackPanel>
-                <StackPanel x:Name="playbackSection" Style="{StaticResource CardStyle}" />
-                <StackPanel x:Name="outputSection" Style="{StaticResource CardStyle}">
-                    <StackPanel x:Name="outputRows" Spacing="12" />
-                    <Rectangle Style="{StaticResource DividerStyle}" />
-                    <Grid ColumnSpacing="12">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Text="Extra delay" />
-                        <TextBlock x:Name="offsetValue" Grid.Column="1" Style="{StaticResource SecondaryBodyStyle}" />
-                    </Grid>
-                    <Slider x:Name="offsetSlider" Minimum="-100" Maximum="300" StepFrequency="0.5" ValueChanged="OnOffsetChanged" />
-                    <TextBlock Text="Increase if this device sounds late compared with the others; decrease if it sounds early."
-                               Style="{StaticResource SecondaryCaptionStyle}" />
-                </StackPanel>
-                <StackPanel Style="{StaticResource CardStyle}">
-                    <TextBlock Text="Device Name" Style="{StaticResource BodyStrongTextBlockStyle}" />
-                    <Grid ColumnSpacing="8">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-                        <TextBox x:Name="nameBox" />
-                        <Button Grid.Column="1" Content="Save" Click="OnRename" />
-                    </Grid>
-                    <TextBlock Text="How hosts list this device. Leave empty to use the computer's name. Takes effect the next time you join."
-                               Style="{StaticResource SecondaryCaptionStyle}" />
-                </StackPanel>
-                <StackPanel Style="{StaticResource CardStyle}">
-                    <Grid ColumnSpacing="8">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Text="Log" Style="{StaticResource BodyStrongTextBlockStyle}" VerticalAlignment="Center" />
-                        <Button Grid.Column="1" Content="Copy Report" Click="OnCopyReport" />
-                        <Button Grid.Column="2" Content="Clear" Click="OnClearLog" />
-                    </Grid>
-                    <TextBlock x:Name="logText" FontFamily="Cascadia Mono, Consolas" FontSize="12" IsTextSelectionEnabled="True" TextWrapping="Wrap" />
-                </StackPanel>
-            </StackPanel>
+            </Grid>
         </ScrollViewer>
     </Grid>
 </Window>

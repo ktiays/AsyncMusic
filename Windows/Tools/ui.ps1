@@ -3,6 +3,7 @@
 # %USERPROFILE%\ui-request.txt and writes what happened to %USERPROFILE%\ui.log:
 #   invoke <name>     clicks the element with that automation name
 #   dump              lists the named elements
+#   rects             lists every element with its bounds (physical pixels)
 #   scroll <percent>  scrolls the visible scroll viewer vertically
 param([string]$Window = "AsyncMusic")
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
@@ -17,6 +18,11 @@ try {
             foreach ($element in $app.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)) {
                 $name = $element.Current.Name
                 if ($name) { $out += "$($element.Current.ControlType.ProgrammaticName)`t$name" }
+            }
+        } elseif ($request -eq "rects") {
+            $out += "Window`t$($app.Current.BoundingRectangle)"
+            foreach ($element in $app.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)) {
+                $out += "$($element.Current.ControlType.ProgrammaticName)`t$($element.Current.ClassName)`t$($element.Current.Name)`t$($element.Current.BoundingRectangle)`t$(if ($element.Current.IsOffscreen) { 'offscreen' })"
             }
         } elseif ($request.StartsWith("scroll ")) {
             $percent = [double]$request.Substring(7)

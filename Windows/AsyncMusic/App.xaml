@@ -10,9 +10,11 @@
                 <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
             </ResourceDictionary.MergedDictionaries>
 
-            <!-- A centered, readable column inside a scroll viewer. -->
+            <!-- A page's content column. It is centered by a grid column capped at this width
+                 rather than by MaxWidth on the panel: WinUI centers a stretched element by its
+                 desired width, so a column narrower than its maximum would sit off to the right. -->
+            <x:Double x:Key="ReadableColumnWidth">560</x:Double>
             <Style x:Key="ReadableColumnStyle" TargetType="StackPanel">
-                <Setter Property="MaxWidth" Value="560" />
                 <Setter Property="Padding" Value="16,20,16,28" />
             </Style>
 
