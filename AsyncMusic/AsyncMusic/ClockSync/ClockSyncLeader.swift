@@ -24,6 +24,18 @@ nonisolated enum ClockSyncNetwork {
         parameters.includePeerToPeer = false
         return parameters
     }
+
+    /// For connecting to a leader: IPv4 only. A leader's host name may also resolve to global
+    /// IPv6 addresses (Windows publishes every address it has), and where a VPN or proxy adds
+    /// an IPv6 default route through its tunnel, those win and the packets leave the local
+    /// network. Every local network has IPv4.
+    static func connectionParameters() -> NWParameters {
+        let parameters = parameters()
+        if let ip = parameters.defaultProtocolStack.internetProtocol as? NWProtocolIP.Options {
+            ip.version = .v4
+        }
+        return parameters
+    }
 }
 
 /// Advertises this device's host clock over Bonjour, answers every ping with a pong, and tells

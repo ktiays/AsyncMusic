@@ -15,10 +15,11 @@ interoperability; other platforms (Windows so far, see `../Windows`) link it dir
 | `alac.hpp` | Apple Lossless encoder and decoder for stream chunks (Apple's reference codec in `third_party/alac`), interoperable with AudioConverter both ways |
 | `host_clock.hpp` | The host clock and sleep detection per platform |
 | `net.hpp`, `serial_queue.hpp` | Blocking BSD/Winsock sockets with timeouts, and a serial task queue with delays (the stand-in for dispatch queues) |
-| `clock_sync.hpp` | `ClockSyncFollower`: probe rounds against a leader, hello, playback/speaker/audio-port messages, reconnects |
-| `audio_stream.hpp` | `AudioStreamClient`: receives a leader's stream over TCP into a `StreamBuffer`, decoding ALAC or PCM16, and reports its buffer |
-| `player.hpp` | `Player`: keeps a renderer fed with the clock map, playback state, channel and remote stream (the engine-independent part of the Apple app's `SyncedPlayer`) |
-| `session.hpp` | `GroupSession`: follows a leader end to end and keeps the state, round history and log a UI shows (the counterpart of the Apple app's `ClockSyncSession`) |
+| `clock_sync.hpp` | `ClockSyncFollower`: probe rounds against a leader, hello, playback/speaker/audio-port messages, reconnects. `ClockSyncLeader`: answers probes on a dual-stack UDP socket and keeps followers told what to play and which channel |
+| `audio_stream.hpp` | `AudioStreamClient`: receives a leader's stream over TCP into a `StreamBuffer`, decoding ALAC or PCM16, and reports its buffer. `AudioStreamServer`: forwards the leader's buffer to every follower and tells when all have enough (adaptive start) |
+| `media.hpp` | `AudioDecoder` (implemented by the platform) and `MediaFile`, and `FileStreamFeeder`, which decodes a file a few seconds ahead of playback |
+| `player.hpp` | `Player`: keeps a renderer fed with the clock map, playback state, channel and what to play: a local file stream or the leader's (the engine-independent part of the Apple app's `SyncedPlayer`) |
+| `session.hpp` | `GroupSession`: leads (play/stop, adaptive start, speaker layouts and channel assignment) or follows, and keeps the state, round history and log a UI shows (the counterpart of the Apple app's `ClockSyncSession`) |
 
 The headers from `alac.hpp` down are not part of the Swift module (`asyncmusic.hpp`); the Apple
 app keeps its Swift versions of those components for now.
@@ -31,14 +32,17 @@ app keeps its Swift versions of those components for now.
   (WASAPI `IAudioClock`) derive it from the frame-position/time pairs those APIs report.
 - **The same clock**: those timestamps must be on the clock `hostClockNanoseconds()` reads
   (see `host_clock.hpp` for which one per platform).
-- **Finding leaders**: mDNS for the service `_asyncmusic._udp` (`kClockSyncServiceType`).
-  `GroupSession::follow` takes a resolver that looks the leader up again on every reconnect.
-- **Identity**: a stable device ID and a display name (`DeviceIdentity`).
+- **mDNS** for the service `_asyncmusic._udp` (`kClockSyncServiceType`): finding leaders
+  (`GroupSession::follow` takes a resolver that looks the leader up again on every reconnect),
+  and advertising `Snapshot::leaderPort` under the device's name while leading.
+- **Decoding files**: an `AudioDecoder` per `MediaFile` that seeks sample-accurately, and the
+  file's ID from the SHA-256 of its contents (`mediaFileID`).
+- **Identity and settings**: a stable device ID and a display name (`DeviceIdentity`), and
+  somewhere to keep the leader's speaker settings (`onSpeakerSettingsChange`).
 
-Following a leader is otherwise complete in the core: sockets, probe scheduling, the audio
-stream and ALAC. Leading (the clock service, stream sending, adaptive start and speaker
-assignment) still lives only in the Apple app (`AsyncMusic/ClockSync`, `AsyncMusic/Streaming`),
-as the reference for porting it here next.
+Everything else, leading and following, is in the core: sockets, probe scheduling, the audio
+stream with ALAC, adaptive start and speaker assignment. The Apple app keeps its own Swift
+implementation of the same (`AsyncMusic/ClockSync`, `AsyncMusic/Streaming`).
 
 ## Building and testing
 
@@ -53,12 +57,15 @@ channel routing and its scheduled switch,
 bit-exact playback through the ring (including wrap-around and late joins), concurrent ring
 access, gap fades, and the wire format against bytes captured from the original Swift
 implementation, so devices on either implementation interoperate. ALAC is checked against
-packets from Apple's encoder (`tests/fixtures`, regenerated with the Swift script there), and
-the follower and stream client run against a fake leader over loopback.
+packets from Apple's encoder (`tests/fixtures`, regenerated with the Swift script there). Over
+loopback, the follower and stream client run against a fake leader, the core's leader and
+stream server against the core's follower and client, and a leading and a following
+`GroupSession` play a file with adaptive start and a stereo pair end to end.
 
-`tools/test_leader.cpp` (built with the tests) is a bare-bones leader for trying a follower on
-another device without an Apple host: it answers clock probes and plays the metronome or the
-channel test, optionally as one side of a stereo pair.
+Two tools are built with the tests, for trying devices against each other without full apps:
+`tools/test_leader.cpp`, a bare-bones leader that plays the metronome or the channel test
+(optionally as one side of a stereo pair), and `tools/test_host.cpp`, which hosts a WAV file
+with `GroupSession` (an Apple device following it plays the ALAC stream).
 
 ## Real-time rules
 

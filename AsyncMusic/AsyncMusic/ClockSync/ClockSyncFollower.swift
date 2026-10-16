@@ -123,7 +123,7 @@ nonisolated final class ClockSyncFollower: @unchecked Sendable {
 
     private func connect() {
         guard running else { return }
-        let connection = NWConnection(to: endpoint, using: ClockSyncNetwork.parameters())
+        let connection = NWConnection(to: endpoint, using: ClockSyncNetwork.connectionParameters())
         connection.stateUpdateHandler = { [weak self, weak connection] state in
             guard let self, let connection, connection === self.connection else { return }
             connectionStateChanged(state)

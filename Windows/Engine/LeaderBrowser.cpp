@@ -18,7 +18,9 @@
 
 #include <algorithm>
 #include <cstring>
+#include <atomic>
 #include <memory>
+#include <vector>
 
 #include <asyncmusic/clock_sync.hpp>
 
@@ -215,6 +217,108 @@ std::optional<net::Address> LeaderBrowser::resolve(const std::wstring& instance,
     }
     std::lock_guard<std::mutex> lock(context->mutex);
     return context->address;
+}
+
+// MARK: - Advertising
+
+/// One registration; outlives a late completion callback the same way a browse does.
+struct LeaderAdvertiser::Registration {
+    DNS_SERVICE_REGISTER_REQUEST request{};
+    PDNS_SERVICE_INSTANCE instance = nullptr;
+    HANDLE done = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    std::atomic<DWORD> status{ERROR_IO_PENDING};
+};
+
+namespace {
+
+/// A DNS label with `.` and `\` escaped.
+std::wstring escapeLabel(const std::wstring& label) {
+    std::wstring escaped;
+    for (wchar_t c : label) {
+        if (c == L'.' || c == L'\\') escaped.push_back(L'\\');
+        escaped.push_back(c);
+    }
+    return escaped;
+}
+
+std::wstring localHostName() {
+    wchar_t name[256] = {};
+    DWORD size = static_cast<DWORD>(std::size(name));
+    if (!GetComputerNameExW(ComputerNameDnsHostname, name, &size) || size == 0) return L"windows.local";
+    return std::wstring(name) + L".local";
+}
+
+}  // namespace
+
+LeaderAdvertiser::~LeaderAdvertiser() {
+    stop();
+}
+
+bool LeaderAdvertiser::advertise(const std::string& name, uint16_t port) {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (registration_ != nullptr && name_ == name && port_ == port) return true;
+    }
+    stop();
+    const std::wstring instanceName = escapeLabel(toUTF16(name)) + L"." + serviceDomain();
+    // The computer's own name, whose addresses the system publishes. (A separate host name
+    // carrying only the LAN address would keep followers off unreachable IPv6 addresses, but
+    // the system does not answer address queries for such names.)
+    const std::wstring host = localHostName();
+    auto* registration = new Registration;
+    registration->instance = DnsServiceConstructInstance(instanceName.c_str(), host.c_str(), nullptr, nullptr, port, 0, 0, 0, nullptr, nullptr);
+    if (registration->instance == nullptr) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        error_ = "Could not describe the service for mDNS";
+        delete registration;
+        return false;
+    }
+    registration->request.Version = DNS_QUERY_REQUEST_VERSION1;
+    registration->request.InterfaceIndex = 0;
+    registration->request.pServiceInstance = registration->instance;
+    registration->request.pQueryContext = registration;
+    registration->request.pRegisterCompletionCallback = [](DWORD status, PVOID context, PDNS_SERVICE_INSTANCE instance) {
+        auto* registration = static_cast<Registration*>(context);
+        registration->status = status;
+        if (instance != nullptr) DnsServiceFreeInstance(instance);
+        SetEvent(registration->done);
+    };
+    const DWORD status = DnsServiceRegister(&registration->request, nullptr);
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (status != DNS_REQUEST_PENDING) {
+        error_ = "Advertising on the network failed (" + std::to_string(status) + ")";
+        DnsServiceFreeInstance(registration->instance);
+        CloseHandle(registration->done);
+        delete registration;
+        return false;
+    }
+    error_.clear();
+    registration_ = registration;
+    name_ = name;
+    port_ = port;
+    return true;
+}
+
+void LeaderAdvertiser::stop() {
+    Registration* registration = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        registration = registration_;
+        registration_ = nullptr;
+        port_ = 0;
+    }
+    if (registration == nullptr) return;
+    // Wait for the registration to have completed, then withdraw it (which sends goodbyes).
+    WaitForSingleObject(registration->done, 2000);
+    if (DnsServiceDeRegister(&registration->request, nullptr) == DNS_REQUEST_PENDING) {
+        WaitForSingleObject(registration->done, 2000);
+    }
+    // The instance and the event stay allocated: a late callback may still refer to them.
+}
+
+std::string LeaderAdvertiser::error() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return error_;
 }
 
 }  // namespace asyncmusic::windows

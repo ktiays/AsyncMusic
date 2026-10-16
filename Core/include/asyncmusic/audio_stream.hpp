@@ -9,12 +9,18 @@
 #include <condition_variable>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "net.hpp"
+#include "playback.hpp"
+#include "protocol.hpp"
 #include "ref_counted.hpp"
+#include "serial_queue.hpp"
 #include "stream_buffer.hpp"
 
 namespace asyncmusic {
@@ -70,6 +76,87 @@ private:
     std::atomic<bool> stopping_{false};
     std::mutex mutex_;
     std::condition_variable stopped_;
+};
+
+/// What the leader is currently playing from a file: its own ring buffer, which the server
+/// forwards to followers frame for frame.
+struct OutgoingStream {
+    uint64_t id = 0;
+    uint64_t source = 0;
+    Ref<StreamBuffer> buffer;
+    /// Where playback is, to start late joiners at the heard position.
+    Ref<PlaybackPosition> position;
+};
+
+/// Leader side of audio streaming: accepts one TCP connection per follower and forwards the
+/// leader's own decoded stream to each. A port of the Apple app's `AudioStreamServer`.
+///
+/// Followers learn the port through the clock sync channel (`onPortChange` →
+/// `ClockSyncLeader::setAudioPort`) and connect to the address they already sync with. Nothing
+/// is decoded twice and no extra pacing is needed: the leader's decoder keeps its buffer a few
+/// seconds ahead of playback, so each sender forwards whatever it has not sent yet, a burst on
+/// start and then a trickle at the playback rate. A follower joining mid-stream gets audio from
+/// the position being heard.
+///
+/// Followers report how far their buffer reaches, which `waitUntilBuffered` uses to start
+/// playback as soon as everyone has enough (adaptive start).
+///
+/// Callbacks run on the server's threads and must not destroy the server.
+class AudioStreamServer {
+public:
+    struct Readiness {
+        int ready = 0;
+        int total = 0;
+        bool timedOut = false;
+    };
+
+    explicit AudioStreamServer(AudioStreamCodec codec = AudioStreamCodec::alac);
+    ~AudioStreamServer();
+    AudioStreamServer(const AudioStreamServer&) = delete;
+    AudioStreamServer& operator=(const AudioStreamServer&) = delete;
+
+    /// Set before `start()`. The port is 0 while not listening.
+    std::function<void(uint16_t port)> onPortChange;
+    std::function<void(int count)> onReceiversChange;
+    std::function<void(const std::string& message)> onError;
+
+    void start();
+    /// Stops and waits for the server's threads.
+    void stop();
+
+    /// Switches every follower to `stream` (none: nothing to send, e.g. metronome or stopped).
+    void setStream(const std::optional<OutgoingStream>& stream);
+
+    /// Calls `completion` once every connected follower has buffered `stream` up to `frame`, or
+    /// after `timeout` seconds, whichever comes first. With no followers it completes right away.
+    void waitUntilBuffered(uint64_t stream, int64_t frame, double timeout, std::function<void(Readiness)> completion);
+
+private:
+    class Sender;
+    struct Waiter {
+        uint64_t stream;
+        int64_t frame;
+        std::chrono::steady_clock::time_point deadline;
+        std::function<void(Readiness)> completion;
+    };
+
+    void listen();
+    void accept();
+    void checkWaiters();
+    void removeFinishedSenders();
+
+    const AudioStreamCodec codec_;
+    SerialQueue queue_;
+    net::TCPListener listener_;
+    std::thread acceptor_;
+    std::atomic<bool> running_{false};
+
+    std::mutex mutex_;
+    std::optional<OutgoingStream> stream_;
+    /// Increases with every `setStream`, so senders notice a switch.
+    std::atomic<uint64_t> streamGeneration_{0};
+    std::vector<std::shared_ptr<Sender>> senders_;
+    std::vector<Waiter> waiters_;
 };
 
 }  // namespace asyncmusic

@@ -31,9 +31,12 @@ endif()
 add_library(asyncmusic_core
     src/alac.cpp
     src/audio_stream_client.cpp
+    src/audio_stream_server.cpp
     src/clock_estimator.cpp
     src/clock_sync_follower.cpp
+    src/clock_sync_leader.cpp
     src/host_clock.cpp
+    src/media.cpp
     src/net.cpp
     src/playback.cpp
     src/player.cpp
@@ -67,4 +70,6 @@ if(ASYNCMUSIC_BUILD_TESTS)
 
     add_executable(test_leader tools/test_leader.cpp)
     target_link_libraries(test_leader PRIVATE asyncmusic_core)
+    add_executable(test_host tools/test_host.cpp)
+    target_link_libraries(test_host PRIVATE asyncmusic_core)
 endif()

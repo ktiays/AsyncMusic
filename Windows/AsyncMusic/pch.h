@@ -6,6 +6,8 @@
 #pragma once
 
 #include <windows.h>
+#include <shellapi.h>
+#include <shobjidl_core.h>
 #include <unknwn.h>
 #include <restrictederrorinfo.h>
 #include <hstring.h>
@@ -18,6 +20,7 @@
 #include <winrt/Windows.ApplicationModel.Activation.h>
 #include <winrt/Windows.ApplicationModel.DataTransfer.h>
 #include <winrt/Microsoft.UI.h>
+#include <winrt/Microsoft.UI.Text.h>
 #include <winrt/Microsoft.UI.Composition.h>
 #include <winrt/Microsoft.UI.Dispatching.h>
 #include <winrt/Microsoft.UI.Xaml.h>

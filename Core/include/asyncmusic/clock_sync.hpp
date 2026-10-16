@@ -8,6 +8,7 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -146,6 +147,108 @@ private:
     std::optional<std::pair<uint64_t, uint32_t>> speakersRevision_;
     int64_t lastSleepDuration_ = 0;
     std::optional<net::Address> audioEndpoint_;
+};
+
+/// Answers every follower's pings on this device's host clock, and tells followers what to play
+/// and which speaker channel each of them plays. A port of the Apple app's `ClockSyncLeader`.
+///
+/// The leader keeps no per-follower sync state; all estimation happens on the followers. It
+/// listens on one dual-stack UDP socket and tells followers apart by their address. Playback,
+/// the audio stream's port and each follower's channel are sent when a follower appears and
+/// says hello, and repeated every second, since UDP may drop them.
+///
+/// The leader does not advertise itself: register `port()` under `kClockSyncServiceType` with
+/// the platform's mDNS once the state is `advertising`.
+///
+/// Callbacks run on the leader's own thread. They must not destroy the leader.
+class ClockSyncLeader {
+public:
+    enum class State : uint8_t {
+        starting,
+        /// Listening on `port()`.
+        advertising,
+        failed,
+        stopped,
+    };
+
+    /// A follower that introduced itself with a hello.
+    struct Member {
+        uint64_t id = 0;
+        std::string name;
+        /// Heard from recently. Members stay listed (inactive) until they are dropped.
+        bool isActive = false;
+
+        bool operator==(const Member& other) const { return id == other.id && name == other.name && isActive == other.isActive; }
+        bool operator!=(const Member& other) const { return !(*this == other); }
+    };
+
+    ClockSyncLeader();
+    ~ClockSyncLeader();
+    ClockSyncLeader(const ClockSyncLeader&) = delete;
+    ClockSyncLeader& operator=(const ClockSyncLeader&) = delete;
+
+    /// Set before `start()`.
+    std::function<void(State state, const std::string& reason)> onStateChange;
+    std::function<void(int count)> onFollowersChange;
+    /// The set of members, or whether each is active, changed.
+    std::function<void(const std::vector<Member>& members)> onMembersChange;
+    /// Playback was stopped because this device slept and its clock jumped.
+    std::function<void()> onPlaybackReset;
+
+    void start();
+    /// Stops and waits for the leader's threads.
+    void stop();
+
+    /// The UDP port, once advertising (0 before).
+    uint16_t port() const { return port_.load(); }
+
+    /// Sends a new playback state to every follower now, and again every second until it changes.
+    void setPlayback(const PlaybackState& state);
+    /// Tells followers where to connect for the audio stream (0: not available).
+    void setAudioPort(uint16_t port);
+    /// Sets the group's layout and each device's channel (devices not listed play the full mix),
+    /// taking effect at leader time `switchTime`.
+    void setSpeakers(SpeakerLayout layout, const std::map<uint64_t, SpeakerChannel>& channels, int64_t switchTime);
+
+private:
+    struct Peer {
+        net::Address address;
+        int64_t lastHeard = 0;
+        bool hasDevice = false;
+        uint64_t device = 0;
+        std::string name;
+    };
+
+    void listen();
+    void receive();
+    void heard(const net::Address& from, int64_t time, const ClockSyncMessage& message);
+    void tick();
+    void broadcast();
+    void sendPlayback(const net::Address& to);
+    void sendSpeakers(const Peer& peer);
+    void send(const ClockSyncMessage& message, const net::Address& to);
+    void reportMembers();
+
+    SerialQueue queue_;
+    net::UDPSocket socket_;
+    std::thread receiver_;
+    std::atomic<bool> receiving_{false};
+    std::atomic<uint16_t> port_{0};
+    /// Identifies the leader's timeline; read by the receiving thread for pongs.
+    std::atomic<uint64_t> session_;
+
+    // Confined to `queue_`.
+    bool running_ = false;
+    std::map<std::string, Peer> peers_;
+    int64_t lastSleepDuration_ = 0;
+    PlaybackState playback_;
+    uint32_t playbackRevision_ = 0;
+    uint16_t audioPort_ = 0;
+    SpeakerLayout layout_ = SpeakerLayout::everywhere;
+    std::map<uint64_t, SpeakerChannel> channels_;
+    int64_t channelSwitchTime_ = 0;
+    uint32_t speakersRevision_ = 0;
+    std::vector<Member> reportedMembers_;
 };
 
 }  // namespace asyncmusic

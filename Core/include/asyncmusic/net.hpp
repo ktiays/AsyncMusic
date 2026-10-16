@@ -84,6 +84,7 @@ protected:
 
 class UDPSocket : public Socket {
 public:
+    /// An IPv6 socket is dual-stack: it also sends and receives IPv4 (as mapped addresses).
     bool open(int family);
     /// Binds to `port` (0: any) on all interfaces of the socket's family.
     bool bind(uint16_t port);
@@ -119,7 +120,7 @@ private:
 /// Accepts TCP connections.
 class TCPListener : public Socket {
 public:
-    /// Listens on `port` (0: any free one) on all interfaces of `family`.
+    /// Listens on `port` (0: any free one) on all interfaces of `family`; IPv6 includes IPv4.
     bool listen(int family, uint16_t port);
     /// Waits up to `timeoutMilliseconds` for a connection; the result is closed if none came.
     TCPSocket accept(int timeoutMilliseconds, Address* peer = nullptr);

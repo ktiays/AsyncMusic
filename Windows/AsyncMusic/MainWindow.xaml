@@ -59,6 +59,23 @@
                     </StackPanel>
 
                     <StackPanel Spacing="12">
+                        <Button Style="{StaticResource CardButtonStyle}" Click="OnHost" AutomationProperties.Name="Host Music">
+                            <Grid ColumnSpacing="14">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <Border Style="{StaticResource IconTileStyle}">
+                                    <FontIcon Glyph="&#xE768;" FontSize="20" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                                </Border>
+                                <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
+                                    <TextBlock Text="Host Music" Style="{StaticResource BodyStrongTextBlockStyle}" />
+                                    <TextBlock Text="Play from this device. Nearby devices join as speakers." Style="{StaticResource SecondaryCaptionStyle}" />
+                                </StackPanel>
+                                <FontIcon Grid.Column="2" Glyph="&#xE76C;" FontSize="12" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                            </Grid>
+                        </Button>
                         <Button Style="{StaticResource CardButtonStyle}" Click="OnJoin" AutomationProperties.Name="Join as Speaker">
                             <Grid ColumnSpacing="14">
                                 <Grid.ColumnDefinitions>
@@ -74,21 +91,6 @@
                                     <TextBlock Text="Play along with a host on the same Wi-Fi." Style="{StaticResource SecondaryCaptionStyle}" />
                                 </StackPanel>
                                 <FontIcon Grid.Column="2" Glyph="&#xE76C;" FontSize="12" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
-                            </Grid>
-                        </Button>
-                        <Button Style="{StaticResource CardButtonStyle}" IsEnabled="False" AutomationProperties.Name="Host Music">
-                            <Grid ColumnSpacing="14">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="Auto" />
-                                    <ColumnDefinition Width="*" />
-                                </Grid.ColumnDefinitions>
-                                <Border Style="{StaticResource IconTileStyle}">
-                                    <FontIcon Glyph="&#xE768;" FontSize="20" Foreground="{ThemeResource TextFillColorDisabledBrush}" />
-                                </Border>
-                                <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
-                                    <TextBlock Text="Host Music" Style="{StaticResource BodyStrongTextBlockStyle}" />
-                                    <TextBlock Text="Coming soon on Windows. Host from a Mac, iPhone or iPad for now." Style="{StaticResource SecondaryCaptionStyle}" />
-                                </StackPanel>
                             </Grid>
                         </Button>
                     </StackPanel>
@@ -176,6 +178,155 @@
             </Grid>
         </ScrollViewer>
 
+        <!-- Host: what plays, how it is spread over the group, and who is in it. -->
+        <ScrollViewer x:Name="hostPage" Grid.Row="1" Visibility="Collapsed">
+            <!-- A readable column: up to ReadableColumnWidth wide, centered. -->
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="1000*" MaxWidth="{StaticResource ReadableColumnWidth}" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="1" Style="{StaticResource ReadableColumnStyle}" Spacing="16">
+                    <InfoBar x:Name="hostInfoBar" IsOpen="False" IsClosable="False" Severity="Warning" />
+
+                    <!-- Now playing -->
+                    <StackPanel Style="{StaticResource CardStyle}">
+                        <Grid ColumnSpacing="14">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Border Width="64" Height="64" CornerRadius="12" Background="{ThemeResource AccentFillColorDefaultBrush}">
+                                <Grid>
+                                    <FontIcon x:Name="artworkIcon" Glyph="&#xEC4F;" FontSize="28" Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}" />
+                                    <ProgressRing x:Name="loadingRing" IsActive="False" Width="28" Height="28" Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}" />
+                                </Grid>
+                            </Border>
+                            <StackPanel Grid.Column="1" Spacing="4" VerticalAlignment="Center">
+                                <TextBlock x:Name="trackTitle" Style="{StaticResource SubtitleTextBlockStyle}" TextWrapping="Wrap" MaxLines="2" TextTrimming="CharacterEllipsis" />
+                                <TextBlock x:Name="trackSubtitle" Style="{StaticResource SecondaryBodyStyle}" />
+                            </StackPanel>
+                        </Grid>
+                        <StackPanel x:Name="progressPanel" Spacing="4" Visibility="Collapsed">
+                            <ProgressBar x:Name="trackProgress" Minimum="0" Maximum="1" />
+                            <Grid>
+                                <TextBlock x:Name="elapsedText" Style="{StaticResource SecondaryCaptionStyle}" />
+                                <TextBlock x:Name="remainingText" Style="{StaticResource SecondaryCaptionStyle}" HorizontalAlignment="Right" />
+                            </Grid>
+                        </StackPanel>
+                        <Grid>
+                            <Button x:Name="chooseMusicButton" Click="OnChooseMusic" VerticalAlignment="Center" AutomationProperties.Name="Choose Music">
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <FontIcon Glyph="&#xE8B7;" FontSize="14" />
+                                    <TextBlock Text="Choose Music" />
+                                </StackPanel>
+                            </Button>
+                            <Button x:Name="playButton" Click="OnPlayStop" HorizontalAlignment="Right" Width="52" Height="52" CornerRadius="26" Padding="0"
+                                    Style="{StaticResource AccentButtonStyle}" AutomationProperties.Name="Play">
+                                <FontIcon x:Name="playIcon" Glyph="&#xE768;" FontSize="20" />
+                            </Button>
+                        </Grid>
+                    </StackPanel>
+
+                    <!-- Sound: how the music is spread over the group. -->
+                    <StackPanel Style="{StaticResource CardStyle}">
+                        <TextBlock Text="Sound" Style="{StaticResource BodyStrongTextBlockStyle}" />
+                        <Button x:Name="everywhereButton" Style="{StaticResource CardButtonStyle}" Click="OnEverywhere" AutomationProperties.Name="Everywhere">
+                            <Grid ColumnSpacing="14">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <Border Style="{StaticResource IconTileStyle}">
+                                    <FontIcon Glyph="&#xE995;" FontSize="20" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                                </Border>
+                                <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
+                                    <TextBlock Text="Everywhere" Style="{StaticResource BodyStrongTextBlockStyle}" />
+                                    <TextBlock Text="Every device plays the full mix." Style="{StaticResource SecondaryCaptionStyle}" />
+                                </StackPanel>
+                                <FontIcon x:Name="everywhereCheck" Grid.Column="2" Glyph="&#xE73E;" FontSize="16" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                            </Grid>
+                        </Button>
+                        <Button x:Name="stereoButton" Style="{StaticResource CardButtonStyle}" Click="OnStereoPair" AutomationProperties.Name="Stereo Pair">
+                            <Grid ColumnSpacing="14">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <Border Style="{StaticResource IconTileStyle}">
+                                    <FontIcon Glyph="&#xE7F5;" FontSize="20" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                                </Border>
+                                <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
+                                    <TextBlock Text="Stereo Pair" Style="{StaticResource BodyStrongTextBlockStyle}" />
+                                    <TextBlock Text="Two devices play the left and right channels." Style="{StaticResource SecondaryCaptionStyle}" />
+                                </StackPanel>
+                                <FontIcon x:Name="stereoCheck" Grid.Column="2" Glyph="&#xE73E;" FontSize="16" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                            </Grid>
+                        </Button>
+                    </StackPanel>
+
+                    <!-- Stereo pair: which device plays which side. -->
+                    <StackPanel x:Name="stereoCard" Style="{StaticResource CardStyle}">
+                        <TextBlock Text="Stereo Pair" Style="{StaticResource BodyStrongTextBlockStyle}" />
+                        <Grid ColumnSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Spacing="8" HorizontalAlignment="Center">
+                                <Grid HorizontalAlignment="Center">
+                                    <Ellipse x:Name="leftBadge" Width="60" Height="60" />
+                                    <TextBlock Text="L" FontSize="25" FontWeight="Bold" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                </Grid>
+                                <ComboBox x:Name="leftDevice" MinWidth="160" HorizontalAlignment="Center" PlaceholderText="Choose Device" SelectionChanged="OnLeftDeviceChanged"
+                                          AutomationProperties.Name="Left Device" />
+                                <TextBlock x:Name="leftCaption" Style="{StaticResource SecondaryCaptionStyle}" HorizontalAlignment="Center" />
+                            </StackPanel>
+                            <Button Grid.Column="1" Click="OnSwap" Width="36" Height="36" CornerRadius="18" Padding="0" VerticalAlignment="Top" Margin="0,12,0,0"
+                                    ToolTipService.ToolTip="Swap Left and Right" AutomationProperties.Name="Swap Left and Right">
+                                <FontIcon Glyph="&#xE8AB;" FontSize="14" />
+                            </Button>
+                            <StackPanel Grid.Column="2" Spacing="8" HorizontalAlignment="Center">
+                                <Grid HorizontalAlignment="Center">
+                                    <Ellipse x:Name="rightBadge" Width="60" Height="60" />
+                                    <TextBlock Text="R" FontSize="25" FontWeight="Bold" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                </Grid>
+                                <ComboBox x:Name="rightDevice" MinWidth="160" HorizontalAlignment="Center" PlaceholderText="Choose Device" SelectionChanged="OnRightDeviceChanged"
+                                          AutomationProperties.Name="Right Device" />
+                                <TextBlock x:Name="rightCaption" Style="{StaticResource SecondaryCaptionStyle}" HorizontalAlignment="Center" />
+                            </StackPanel>
+                        </Grid>
+                        <Grid ColumnSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <FontIcon x:Name="stereoStatusIcon" FontSize="14" VerticalAlignment="Top" Margin="0,3,0,0" />
+                            <TextBlock x:Name="stereoStatus" Grid.Column="1" Style="{StaticResource SecondaryBodyStyle}" />
+                        </Grid>
+                        <Button x:Name="testButton" Click="OnTestChannels" AutomationProperties.Name="Test Left &amp; Right">
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <FontIcon x:Name="testIcon" Glyph="&#xE7F5;" FontSize="14" />
+                                <TextBlock x:Name="testText" Text="Test Left &amp; Right" />
+                            </StackPanel>
+                        </Button>
+                    </StackPanel>
+
+                    <!-- Devices in the group. Rows are filled in from code. -->
+                    <StackPanel Style="{StaticResource CardStyle}">
+                        <TextBlock Text="Devices" Style="{StaticResource BodyStrongTextBlockStyle}" />
+                        <StackPanel x:Name="deviceList" Spacing="12" />
+                    </StackPanel>
+
+                    <Button Content="Stop Hosting" HorizontalAlignment="Center" Margin="0,8,0,0" Click="OnLeave" />
+                </StackPanel>
+            </Grid>
+        </ScrollViewer>
+
         <!-- Diagnostics: sync, streaming and output in detail. Rows are filled in from code. -->
         <ScrollViewer x:Name="diagnosticsPage" Grid.Row="1" Visibility="Collapsed">
             <!-- A readable column: up to ReadableColumnWidth wide, centered. -->
@@ -187,6 +338,7 @@
                 </Grid.ColumnDefinitions>
                 <StackPanel Grid.Column="1" Style="{StaticResource ReadableColumnStyle}" Spacing="16">
                     <StackPanel x:Name="generalSection" Style="{StaticResource CardStyle}" />
+                    <StackPanel x:Name="leaderSection" Style="{StaticResource CardStyle}" />
                     <StackPanel x:Name="estimateSection" Style="{StaticResource CardStyle}" />
                     <StackPanel x:Name="chartsSection" Style="{StaticResource CardStyle}">
                         <TextBlock Text="Residual vs. fitted line (µs)" Style="{StaticResource BodyStrongTextBlockStyle}" />

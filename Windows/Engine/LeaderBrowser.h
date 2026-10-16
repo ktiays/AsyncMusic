@@ -56,4 +56,28 @@ private:
     std::string error_;
 };
 
+/// Advertises this device as a leader through the system's mDNS: the instance `name` of
+/// `_asyncmusic._udp` at this computer's `.local` host name, on the clock sync port.
+class LeaderAdvertiser {
+public:
+    LeaderAdvertiser() = default;
+    ~LeaderAdvertiser();
+    LeaderAdvertiser(const LeaderAdvertiser&) = delete;
+    LeaderAdvertiser& operator=(const LeaderAdvertiser&) = delete;
+
+    /// Registers (or re-registers, if the name or port changed) the service.
+    bool advertise(const std::string& name, uint16_t port);
+    /// Withdraws the registration, waiting briefly for the system to confirm.
+    void stop();
+    std::string error() const;
+
+private:
+    struct Registration;
+    mutable std::mutex mutex_;
+    Registration* registration_ = nullptr;
+    std::string name_;
+    uint16_t port_ = 0;
+    std::string error_;
+};
+
 }  // namespace asyncmusic::windows

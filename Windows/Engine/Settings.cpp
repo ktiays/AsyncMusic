@@ -85,4 +85,34 @@ void setManualOffset(double milliseconds) {
     write(L"ManualOffset", REG_BINARY, &milliseconds, sizeof(milliseconds));
 }
 
+namespace {
+std::wstring assignmentKey(SpeakerChannel channel) {
+    return L"SpeakerChannel" + std::to_wstring(static_cast<int>(channel));
+}
+}  // namespace
+
+GroupSession::SpeakerSettings speakerSettings() {
+    GroupSession::SpeakerSettings settings;
+    const uint64_t layout = read<uint64_t>(L"SpeakerLayout", REG_QWORD).value_or(0);
+    if (layout <= kSpeakerLayoutMaximum) settings.layout = static_cast<SpeakerLayout>(layout);
+    for (uint8_t raw = 1; raw <= kSpeakerChannelMaximum; ++raw) {
+        const auto channel = static_cast<SpeakerChannel>(raw);
+        const uint64_t device = read<uint64_t>(assignmentKey(channel).c_str(), REG_QWORD).value_or(0);
+        if (device != 0) settings.assignments[channel] = device;
+    }
+    return settings;
+}
+
+void setSpeakerSettings(const GroupSession::SpeakerSettings& settings) {
+    const uint64_t layout = static_cast<uint64_t>(settings.layout);
+    write(L"SpeakerLayout", REG_QWORD, &layout, sizeof(layout));
+    for (uint8_t raw = 1; raw <= kSpeakerChannelMaximum; ++raw) {
+        const auto channel = static_cast<SpeakerChannel>(raw);
+        const auto device = settings.assignments.find(channel);
+        // 0 is never a device ID, so it stands for "nobody".
+        const uint64_t value = device == settings.assignments.end() ? 0 : device->second;
+        write(assignmentKey(channel).c_str(), REG_QWORD, &value, sizeof(value));
+    }
+}
+
 }  // namespace asyncmusic::windows::settings

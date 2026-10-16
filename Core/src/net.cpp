@@ -252,9 +252,19 @@ void Socket::setVoiceTrafficClass() {
 
 // MARK: - UDP
 
+namespace {
+/// IPv6 sockets also take IPv4 traffic (as mapped addresses), so one socket serves both.
+void allowIPv4(intptr_t handle, int family) {
+    if (family != AF_INET6) return;
+    const int off = 0;
+    setsockopt(native(handle), IPPROTO_IPV6, IPV6_V6ONLY, reinterpret_cast<const char*>(&off), sizeof(off));
+}
+}  // namespace
+
 bool UDPSocket::open(int family) {
     if (!create(family, SOCK_DGRAM, IPPROTO_UDP)) return false;
     family_ = family;
+    allowIPv4(handle_, family);
 #if defined(_WIN32)
     // Otherwise one ICMP "port unreachable" (a peer that went away) fails the next receive of
     // an unconnected socket, whoever it was from.
@@ -390,6 +400,7 @@ void TCPSocket::adopt(intptr_t handle) {
 
 bool TCPListener::listen(int family, uint16_t port) {
     if (!create(family, SOCK_STREAM, IPPROTO_TCP)) return false;
+    allowIPv4(handle_, family);
     const Native socket = native(handle_);
     sockaddr_storage storage{};
     Length length = 0;

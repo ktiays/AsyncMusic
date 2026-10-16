@@ -6,6 +6,7 @@
 #pragma once
 
 #include <asyncmusic/clock_sync.hpp>
+#include <asyncmusic/session.hpp>
 
 #include <cstdint>
 #include <optional>
@@ -26,6 +27,10 @@ void setDeviceName(const std::string& name);
 
 double manualOffset();
 void setManualOffset(double milliseconds);
+
+/// The leader's speaker layout and channel assignments.
+GroupSession::SpeakerSettings speakerSettings();
+void setSpeakerSettings(const GroupSession::SpeakerSettings& settings);
 
 }  // namespace settings
 

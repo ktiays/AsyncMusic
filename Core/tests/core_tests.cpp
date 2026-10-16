@@ -9,6 +9,7 @@
 #include <asyncmusic/asyncmusic.hpp>
 #include <asyncmusic/audio_stream.hpp>
 #include <asyncmusic/clock_sync.hpp>
+#include <asyncmusic/media.hpp>
 #include <asyncmusic/net.hpp>
 #include <asyncmusic/serial_queue.hpp>
 #include <asyncmusic/session.hpp>
@@ -866,6 +867,202 @@ void sessionFollowsLeader() {
     server.join();
 }
 
+// MARK: - Leading
+
+void leaderServesFollower() {
+    // Declared first, so they outlive the leader and follower, whose callbacks use them.
+    std::mutex mutex;
+    std::vector<ClockSyncLeader::Member> members;
+    std::optional<ClockMap> map;
+    std::optional<PlaybackState> received;
+    std::optional<net::Address> endpoint;
+    std::optional<SpeakerChannel> channel;
+    ClockSyncLeader leader;
+    leader.onMembersChange = [&](const std::vector<ClockSyncLeader::Member>& current) {
+        std::lock_guard<std::mutex> lock(mutex);
+        members = current;
+    };
+    leader.start();
+    CHECK(waitUntil([&] { return leader.port() != 0; }, 5), "leader listening");
+    const PlaybackState playback{kPlaybackSourceMetronome, hostClockNanoseconds(), 0};
+    leader.setPlayback(playback);
+    leader.setAudioPort(4321);
+    leader.setSpeakers(SpeakerLayout::stereoPair, {{0xBEEF, SpeakerChannel::left}}, 99);
+
+    // Over IPv4, to the dual-stack socket.
+    ClockSyncFollower follower([&] { return net::Address::fromString("127.0.0.1", leader.port()); }, DeviceIdentity{0xBEEF, "Follower"}, fastFollower());
+    follower.onRound = [&](const ClockSyncRound& round) {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (round.map) map = round.map;
+    };
+    follower.onPlayback = [&](const PlaybackState& state) {
+        std::lock_guard<std::mutex> lock(mutex);
+        received = state;
+    };
+    follower.onAudioEndpoint = [&](const net::Address& address) {
+        std::lock_guard<std::mutex> lock(mutex);
+        endpoint = address;
+    };
+    follower.onSpeakers = [&](SpeakerLayout, SpeakerChannel assigned, int64_t) {
+        std::lock_guard<std::mutex> lock(mutex);
+        channel = assigned;
+    };
+    follower.start();
+    CHECK(waitUntil([&] {
+        std::lock_guard<std::mutex> lock(mutex);
+        return map && received && endpoint && channel && !members.empty();
+    }, 5), "follower got everything");
+    std::lock_guard<std::mutex> lock(mutex);
+    // Same clock on both ends.
+    CHECK(map && std::llabs(map->offsetAtLocal(hostClockNanoseconds())) < 1'000'000, "offset %lld", map ? static_cast<long long>(map->offsetAtLocal(hostClockNanoseconds())) : 0LL);
+    CHECK(received && *received == playback, "playback");
+    CHECK(endpoint && endpoint->port() == 4321, "audio port");
+    CHECK(channel == SpeakerChannel::left, "channel");
+    CHECK(members.size() == 1 && members[0].id == 0xBEEF && members[0].name == "Follower" && members[0].isActive, "member");
+}
+
+/// A stereo buffer holding `frames` frames of `alacTestSignal` from `startFrame` on.
+Ref<StreamBuffer> testSignalBuffer(double rate, int64_t startFrame, int frames) {
+    const std::vector<int16_t> signal = alacTestSignal(frames);
+    std::vector<float> left(static_cast<size_t>(frames)), right(static_cast<size_t>(frames));
+    for (int i = 0; i < frames; ++i) {
+        left[static_cast<size_t>(i)] = signal[static_cast<size_t>(2 * i)] / 32768.0f;
+        right[static_cast<size_t>(i)] = signal[static_cast<size_t>(2 * i + 1)] / 32768.0f;
+    }
+    Ref<StreamBuffer> buffer = Ref<StreamBuffer>::adopt(StreamBuffer::create(rate, frames + 1000, startFrame));
+    buffer->append(left.data(), right.data(), frames);
+    return buffer;
+}
+
+void streamServerFeedsClient() {
+    // Declared first, so they outlive the server and client, whose callbacks use them.
+    std::mutex mutex;
+    Ref<StreamBuffer> received;
+    std::atomic<uint16_t> port{0};
+    std::atomic<bool> ready{false};
+    AudioStreamServer::Readiness readiness;
+    AudioStreamServer server;
+    server.onPortChange = [&](uint16_t value) { port = value; };
+    server.start();
+    CHECK(port != 0, "server listening");
+
+    // Playback has not reached the stream yet, so it is sent from its first frame.
+    const double rate = 48000;
+    const int frames = 3 * kALACFramesPerPacket + 123;
+    OutgoingStream stream{77, 0xF11E, testSignalBuffer(rate, 500, frames), Ref<PlaybackPosition>::adopt(PlaybackPosition::create())};
+    stream.position->setClockMap(ClockMap::identity());
+    stream.position->setPlayback(PlaybackState{0xF11E, hostClockNanoseconds() + 10'000'000'000, 0});
+    server.setStream(stream);
+
+    AudioStreamClient client(*net::Address::fromString("127.0.0.1", port));
+    client.onStream = [&](uint64_t source, const Ref<StreamBuffer>& buffer) {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (source == 0xF11E) received = buffer;
+    };
+    client.start();
+    // Until the follower connects there is nobody to wait for, so wait for the connection first.
+    CHECK(waitUntil([&] { std::lock_guard<std::mutex> lock(mutex); return received.get() != nullptr; }, 5), "stream started");
+    server.waitUntilBuffered(77, 500 + frames, 5, [&](AudioStreamServer::Readiness result) {
+        readiness = result;
+        ready = true;
+    });
+    CHECK(waitUntil([&] { return ready.load(); }, 6), "adaptive start completed");
+    CHECK(readiness.ready == 1 && readiness.total == 1 && !readiness.timedOut, "ready %d/%d timed out %d", readiness.ready, readiness.total, readiness.timedOut);
+
+    std::lock_guard<std::mutex> lock(mutex);
+    CHECK(received->validRange().lowerBound == 500 && received->endFrame() == 500 + frames, "range [%lld, %lld)",
+        static_cast<long long>(received->validRange().lowerBound), static_cast<long long>(received->endFrame()));
+    const std::vector<int16_t> signal = alacTestSignal(frames);
+    bool exact = true;
+    for (int i = 0; i < frames && exact; ++i) {
+        const StereoSample sample = received->sampleAt(500 + i);
+        exact = toPCM16(sample.left) == signal[static_cast<size_t>(2 * i)] && toPCM16(sample.right) == signal[static_cast<size_t>(2 * i + 1)];
+    }
+    CHECK(exact, "streamed through ALAC bit-exact");
+}
+
+/// Decodes `alacTestSignal` as if it were a file.
+class TestSignalDecoder final : public AudioDecoder {
+public:
+    explicit TestSignalDecoder(int frames) : signal_(alacTestSignal(frames)), frames_(frames) {}
+    bool seek(int64_t frame) override {
+        position_ = std::clamp<int64_t>(frame, 0, frames_);
+        return true;
+    }
+    int read(float* left, float* right, int capacity) override {
+        const int count = static_cast<int>(std::min<int64_t>(capacity, frames_ - position_));
+        for (int i = 0; i < count; ++i) {
+            left[i] = signal_[static_cast<size_t>(2 * (position_ + i))] / 32768.0f;
+            right[i] = signal_[static_cast<size_t>(2 * (position_ + i) + 1)] / 32768.0f;
+        }
+        position_ += count;
+        return count;
+    }
+
+private:
+    std::vector<int16_t> signal_;
+    int64_t frames_;
+    int64_t position_ = 0;
+};
+
+/// A leader and a follower session end to end: adaptive start of a streamed file and a stereo
+/// pair.
+void sessionLeadsFollower() {
+    const int frames = 44100 * 6;
+    auto file = std::make_shared<MediaFile>();
+    file->id = 0xABCDEF;
+    file->name = "Test Signal";
+    file->sampleRate = 44100;
+    file->frameCount = frames;
+    file->openDecoder = [frames] { return std::make_unique<TestSignalDecoder>(frames); };
+
+    std::mutex mutex;
+    std::optional<GroupSession::SpeakerSettings> stored;
+    GroupSession leader(DeviceIdentity{1, "Leader"});
+    leader.onSpeakerSettingsChange = [&](const GroupSession::SpeakerSettings& settings) {
+        std::lock_guard<std::mutex> lock(mutex);
+        stored = settings;
+    };
+    leader.setRole(GroupSession::Role::leader);
+    CHECK(waitUntil([&] { return leader.snapshot().leaderPort != 0; }, 5), "leader advertising");
+    const uint16_t port = leader.snapshot().leaderPort;
+
+    GroupSession follower(DeviceIdentity{2, "Follower"});
+    follower.setRole(GroupSession::Role::follower);
+    follower.follow("Leader", [port] { return net::Address::fromString("127.0.0.1", port); });
+    CHECK(waitUntil([&] {
+        const auto state = leader.snapshot();
+        return state.members.size() == 1 && state.members[0].isActive && follower.snapshot().isAudioConnected && follower.snapshot().clockMap;
+    }, 10), "follower joined");
+
+    leader.addTrack(file);
+    CHECK(waitUntil([&] { return leader.snapshot().selectedTrack.has_value(); }, 2), "track selected");
+    leader.play(file->id);
+    CHECK(waitUntil([&] {
+        const auto state = follower.snapshot();
+        return state.playback.source == file->id && !state.isWaitingForAudio && !leader.snapshot().isPreparingPlayback;
+    }, 8), "follower plays the streamed file");
+    const auto log = leader.snapshot().log;
+    const bool everyoneReady = std::any_of(log.begin(), log.end(), [](const GroupSession::LogLine& line) { return line.text.find("1/1 followers ready") != std::string::npos; });
+    CHECK(everyoneReady, "adaptive start waited for the follower");
+    CHECK(leader.describe(file->id) == "“Test Signal”", "describe %s", leader.describe(file->id).c_str());
+
+    leader.setSpeakerLayout(SpeakerLayout::stereoPair);
+    CHECK(waitUntil([&] {
+        return leader.snapshot().channel == SpeakerChannel::left && follower.snapshot().channel == SpeakerChannel::right && leader.snapshot().isLayoutComplete;
+    }, 5), "paired as left and right");
+    leader.swapChannels();
+    CHECK(waitUntil([&] { return leader.snapshot().channel == SpeakerChannel::right && follower.snapshot().channel == SpeakerChannel::left; }, 5), "swapped");
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        CHECK(stored && stored->layout == SpeakerLayout::stereoPair && stored->assignments.at(SpeakerChannel::left) == 2
+            && stored->assignments.at(SpeakerChannel::right) == 1, "settings stored");
+    }
+
+    leader.stopPlayback();
+    CHECK(waitUntil([&] { return !follower.snapshot().playback.isPlaying(); }, 5), "stopped everywhere");
+}
+
 void playbackPosition() {
     Ref<PlaybackPosition> position = Ref<PlaybackPosition>::adopt(PlaybackPosition::create());
     int64_t media = 0;
@@ -910,6 +1107,9 @@ int main() {
     run("follower: syncs with a leader", followerSyncsWithLeader);
     run("stream client: receives ALAC and PCM", audioStreamClientReceives);
     run("session: follows a leader", sessionFollowsLeader);
+    run("leader: serves a follower", leaderServesFollower);
+    run("stream server: feeds a client", streamServerFeedsClient);
+    run("session: leads a follower", sessionLeadsFollower);
     run("playback position", playbackPosition);
     run("host clock", sleepClock);
     std::printf("%s\n", failures == 0 ? "All tests passed." : "Some tests FAILED.");

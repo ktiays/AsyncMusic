@@ -125,6 +125,25 @@ TextBlock addRow(StackPanel const& panel, hstring const& label) {
     return value;
 }
 
+std::string minutesAndSeconds(double seconds) {
+    const int total = static_cast<int>(std::max(seconds, 0.0));
+    return std::format("{}:{:02}", total / 60, total % 60);
+}
+
+Style resourceStyle(const wchar_t* key) {
+    return Application::Current().Resources().Lookup(box_value(key)).as<Style>();
+}
+
+/// A speaker badge's color: blue for left, orange for right, gray for the full mix.
+Brush channelBrush(asyncmusic::SpeakerChannel channel) {
+    switch (channel) {
+    case asyncmusic::SpeakerChannel::left: return colorBrush(0x00, 0x78, 0xD4);
+    case asyncmusic::SpeakerChannel::right: return colorBrush(0xF7, 0x63, 0x0C);
+    case asyncmusic::SpeakerChannel::full: break;
+    }
+    return themeBrush(L"SubtleFillColorSecondaryBrush");
+}
+
 void addHeader(StackPanel const& panel, hstring const& title) {
     TextBlock header;
     header.Text(title);
@@ -157,7 +176,22 @@ MainWindow::MainWindow() {
         engine_.reset();
     });
     show(Page::welcome);
+    openFileFromCommandLine();
     tick();
+}
+
+/// `AsyncMusic.exe <audio file>` (as with "Open with"): host, with that file chosen.
+void MainWindow::openFileFromCommandLine() {
+    int count = 0;
+    LPWSTR* arguments = CommandLineToArgvW(GetCommandLineW(), &count);
+    if (arguments == nullptr) return;
+    std::wstring path = count >= 2 ? arguments[1] : L"";
+    LocalFree(arguments);
+    const DWORD attributes = path.empty() ? INVALID_FILE_ATTRIBUTES : GetFileAttributesW(path.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0) return;
+    engine_->setRole(GroupSession::Role::leader);
+    show(Page::host);
+    engine_->loadTrack(path);
 }
 
 void MainWindow::setUpWindow() {
@@ -183,6 +217,12 @@ void MainWindow::buildDiagnostics() {
     rows_.device = addRow(generalSection(), L"Device");
     rows_.deviceID = addRow(generalSection(), L"Device ID");
     rows_.status = addRow(generalSection(), L"Status");
+
+    addHeader(leaderSection(), L"Group");
+    rows_.followers = addRow(leaderSection(), L"Followers");
+    rows_.members = addRow(leaderSection(), L"Members");
+    rows_.clockPort = addRow(leaderSection(), L"Clock port (UDP)");
+    rows_.advertising = addRow(leaderSection(), L"Advertising");
 
     addHeader(estimateSection(), L"Clock");
     rows_.connectedTo = addRow(estimateSection(), L"Connected to");
@@ -225,6 +265,7 @@ void MainWindow::show(Page page) {
     page_ = page;
     welcomePage().Visibility(page == Page::welcome ? Visibility::Visible : Visibility::Collapsed);
     joinPage().Visibility(page == Page::join ? Visibility::Visible : Visibility::Collapsed);
+    hostPage().Visibility(page == Page::host ? Visibility::Visible : Visibility::Collapsed);
     diagnosticsPage().Visibility(page == Page::diagnostics ? Visibility::Visible : Visibility::Collapsed);
     backButton().Visibility(page == Page::diagnostics ? Visibility::Visible : Visibility::Collapsed);
     diagnosticsButton().Visibility(page == Page::diagnostics ? Visibility::Collapsed : Visibility::Visible);
@@ -251,6 +292,87 @@ void MainWindow::OnJoin(IInspectable const&, RoutedEventArgs const&) {
 void MainWindow::OnLeave(IInspectable const&, RoutedEventArgs const&) {
     engine_->setRole(GroupSession::Role::off);
     show(Page::welcome);
+}
+
+void MainWindow::OnHost(IInspectable const&, RoutedEventArgs const&) {
+    shownDevices_.clear();
+    engine_->setRole(GroupSession::Role::leader);
+    show(Page::host);
+}
+
+void MainWindow::OnChooseMusic(IInspectable const&, RoutedEventArgs const&) {
+    if (const auto path = pickAudioFile()) {
+        engine_->loadTrack(*path);
+        dirty_ = true;
+    }
+}
+
+void MainWindow::OnPlayStop(IInspectable const&, RoutedEventArgs const&) {
+    const auto state = engine_->session().snapshot();
+    if (state.playback.isPlaying() || state.isPreparingPlayback) {
+        engine_->session().stopPlayback();
+    } else if (state.selectedTrack) {
+        engine_->session().play(state.selectedTrack->id);
+    }
+}
+
+void MainWindow::OnEverywhere(IInspectable const&, RoutedEventArgs const&) {
+    engine_->session().setSpeakerLayout(asyncmusic::SpeakerLayout::everywhere);
+}
+
+void MainWindow::OnStereoPair(IInspectable const&, RoutedEventArgs const&) {
+    engine_->session().setSpeakerLayout(asyncmusic::SpeakerLayout::stereoPair);
+}
+
+void MainWindow::OnLeftDeviceChanged(IInspectable const&, SelectionChangedEventArgs const&) {
+    assignFromPicker(leftDevice(), asyncmusic::SpeakerChannel::left);
+}
+
+void MainWindow::OnRightDeviceChanged(IInspectable const&, SelectionChangedEventArgs const&) {
+    assignFromPicker(rightDevice(), asyncmusic::SpeakerChannel::right);
+}
+
+void MainWindow::assignFromPicker(ComboBox const& picker, asyncmusic::SpeakerChannel channel) {
+    if (isUpdatingPickers_ || !engine_) return;
+    const int index = picker.SelectedIndex();
+    if (index < 0 || index >= static_cast<int>(candidates_.size())) return;
+    engine_->session().assign(candidates_[static_cast<size_t>(index)].first, channel);
+}
+
+void MainWindow::OnSwap(IInspectable const&, RoutedEventArgs const&) {
+    engine_->session().swapChannels();
+}
+
+void MainWindow::OnTestChannels(IInspectable const&, RoutedEventArgs const&) {
+    if (engine_->session().snapshot().playback.source == asyncmusic::kPlaybackSourceChannelTest) {
+        engine_->session().stopPlayback();
+    } else {
+        engine_->session().play(asyncmusic::kPlaybackSourceChannelTest);
+    }
+}
+
+/// Asks for an audio file with the system's file dialog.
+std::optional<std::wstring> MainWindow::pickAudioFile() {
+    com_ptr<IFileOpenDialog> dialog;
+    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(dialog.put())))) return std::nullopt;
+    const COMDLG_FILTERSPEC filters[] = {
+        {L"Audio files", L"*.mp3;*.m4a;*.aac;*.wav;*.flac;*.aif;*.aiff;*.wma;*.caf"},
+        {L"All files", L"*.*"},
+    };
+    dialog->SetFileTypes(static_cast<UINT>(std::size(filters)), filters);
+    dialog->SetTitle(L"Choose Music");
+    FILEOPENDIALOGOPTIONS options = 0;
+    dialog->GetOptions(&options);
+    dialog->SetOptions(options | FOS_FILEMUSTEXIST | FOS_FORCEFILESYSTEM);
+    HWND owner = nullptr;
+    this->try_as<::IWindowNative>()->get_WindowHandle(&owner);
+    if (FAILED(dialog->Show(owner))) return std::nullopt;
+    com_ptr<IShellItem> item;
+    PWSTR path = nullptr;
+    if (FAILED(dialog->GetResult(item.put())) || FAILED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) return std::nullopt;
+    std::wstring result = path;
+    CoTaskMemFree(path);
+    return result;
 }
 
 void MainWindow::OnOffsetChanged(IInspectable const&, Controls::Primitives::RangeBaseValueChangedEventArgs const& args) {
@@ -295,11 +417,16 @@ void MainWindow::tick() {
 }
 
 void MainWindow::refresh(const GroupSession::Snapshot& state) {
-    // The engine may leave a group by itself (never yet, but keep the screen honest).
-    if (state.role == GroupSession::Role::off && page_ == Page::join) show(Page::welcome);
+    // Back to the welcome screen when the session leaves its group. (Only on that change: a role
+    // just requested is still off here until the session has applied it.)
+    if (state.role == GroupSession::Role::off && shownRole_ != GroupSession::Role::off && (page_ == Page::join || page_ == Page::host)) {
+        show(Page::welcome);
+    }
+    shownRole_ = state.role;
     deviceNameText().Text(text(std::format("This device appears to others as “{}”.", state.identity.name)));
     refreshHosts(state);
     refreshSpeaker(state);
+    if (state.role == GroupSession::Role::leader) refreshHost(state);
     if (page_ == Page::diagnostics) refreshDiagnostics(state);
 }
 
@@ -429,11 +556,208 @@ void MainWindow::refreshSpeaker(const GroupSession::Snapshot& state) {
     outputInfoBar().Message(text(output.error));
 }
 
+void MainWindow::refreshHost(const GroupSession::Snapshot& state) {
+    const bool isPlaying = state.playback.isPlaying();
+    const bool isLoading = engine_->isLoadingTrack();
+
+    // Now playing.
+    std::string title = state.selectedTrack ? state.selectedTrack->name : "No Music Chosen";
+    if (isPlaying) {
+        title = state.playback.source == asyncmusic::kPlaybackSourceMetronome ? "Metronome"
+            : state.playback.source == asyncmusic::kPlaybackSourceChannelTest ? "Left & Right Test"
+            : state.selectedTrack && state.selectedTrack->id == state.playback.source ? state.selectedTrack->name
+            : "Music";
+    }
+    trackTitle().Text(text(title));
+    std::string subtitle;
+    if (isLoading) {
+        subtitle = "Loading…";
+    } else if (state.isPreparingPlayback) {
+        subtitle = "Getting speakers ready…";
+    } else if (isPlaying) {
+        const auto active = std::count_if(state.members.begin(), state.members.end(), [](const auto& member) { return member.isActive; });
+        subtitle = active == 0 ? "Playing on this device" : std::format("Playing on {} devices", active + 1);
+    } else {
+        subtitle = state.selectedTrack ? "Ready to play" : "Choose a song to start.";
+    }
+    trackSubtitle().Text(text(subtitle));
+    loadingRing().IsActive(isLoading);
+    artworkIcon().Visibility(isLoading ? Visibility::Collapsed : Visibility::Visible);
+    artworkIcon().Glyph(isPlaying ? L"\uE995" : L"\uEC4F");
+    chooseMusicButton().IsEnabled(!isLoading);
+    const bool canStop = isPlaying || state.isPreparingPlayback;
+    playIcon().Glyph(canStop ? L"\uE71A" : L"\uE768");
+    Automation::AutomationProperties::SetName(playButton(), canStop ? L"Stop" : L"Play");
+    playButton().IsEnabled(canStop || state.selectedTrack.has_value());
+
+    std::string problem = engine_->loadError();
+    if (problem.empty()) problem = engine_->advertisingError();
+    hostInfoBar().IsOpen(!problem.empty());
+    hostInfoBar().Message(text(problem));
+
+    // Sound.
+    const bool stereo = state.speakers.layout == asyncmusic::SpeakerLayout::stereoPair;
+    everywhereCheck().Visibility(stereo ? Visibility::Collapsed : Visibility::Visible);
+    stereoCheck().Visibility(stereo ? Visibility::Visible : Visibility::Collapsed);
+    stereoCard().Visibility(stereo ? Visibility::Visible : Visibility::Collapsed);
+
+    // Stereo pair.
+    refreshDevicePickers(state);
+    const auto slot = [&](asyncmusic::SpeakerChannel channel, Shapes::Ellipse const& badge, TextBlock const& caption) {
+        const auto device = state.speakers.assignments.find(channel);
+        const bool present = device != state.speakers.assignments.end() && state.isDevicePresent(device->second);
+        badge.Fill(channelBrush(channel));
+        badge.Opacity(present ? 1.0 : 0.4);
+        caption.Text(device == state.speakers.assignments.end() ? hstring(L" ")
+            : device->second == state.identity.id ? hstring(L"This device")
+            : present ? hstring(L"Connected") : hstring(L"Not connected"));
+    };
+    slot(asyncmusic::SpeakerChannel::left, leftBadge(), leftCaption());
+    slot(asyncmusic::SpeakerChannel::right, rightBadge(), rightCaption());
+    if (state.isLayoutComplete) {
+        stereoStatusIcon().Glyph(L"\uE930");
+        stereoStatusIcon().Foreground(toneBrush(Tone::good));
+        stereoStatus().Text(L"Stereo is on. For the best effect, sit midway between the two devices.");
+    } else {
+        stereoStatusIcon().Glyph(L"\uE946");
+        stereoStatusIcon().Foreground(themeBrush(L"TextFillColorSecondaryBrush"));
+        std::string waiting = "Choose a device for each side. Meanwhile every device plays the full mix.";
+        if (state.members.empty()) {
+            waiting = "Open AsyncMusic on a second device on this network and choose Join as Speaker. Until then, this device plays the full mix.";
+        } else {
+            for (const auto& [channel, device] : state.speakers.assignments) {
+                if (!state.isDevicePresent(device)) {
+                    waiting = "Waiting for " + state.nameOfDevice(device).value_or("the other device") + ". Meanwhile every device plays the full mix.";
+                    break;
+                }
+            }
+        }
+        stereoStatus().Text(text(waiting));
+    }
+    const bool testing = state.playback.source == asyncmusic::kPlaybackSourceChannelTest;
+    testIcon().Glyph(testing ? L"\uE71A" : L"\uE7F5");
+    testText().Text(testing ? L"Stop Test" : L"Test Left & Right");
+
+    // Devices, rebuilt only when something about them changed.
+    std::string devices = std::to_string(static_cast<int>(state.channel)) + state.identity.name;
+    for (const auto& member : state.members) {
+        const auto channel = state.activeChannels.find(member.id);
+        devices += std::format("|{}{}{}", member.name, member.isActive ? 1 : 0, channel == state.activeChannels.end() ? 0 : static_cast<int>(channel->second));
+    }
+    if (devices == shownDevices_) return;
+    shownDevices_ = devices;
+    deviceList().Children().Clear();
+    const auto addDevice = [&](const std::string& name, const std::string& detail, const wchar_t* glyph, bool isActive, asyncmusic::SpeakerChannel channel) {
+        if (deviceList().Children().Size() > 0) {
+            Shapes::Rectangle divider;
+            divider.Style(resourceStyle(L"DividerStyle"));
+            deviceList().Children().Append(divider);
+        }
+        Grid row;
+        row.ColumnSpacing(12);
+        for (auto width : {GridLengthHelper::FromPixels(28), GridLengthHelper::FromValueAndType(1, GridUnitType::Star), GridLengthHelper::Auto()}) {
+            ColumnDefinition column;
+            column.Width(width);
+            row.ColumnDefinitions().Append(column);
+        }
+        FontIcon icon;
+        icon.Glyph(glyph);
+        icon.FontSize(18);
+        icon.Foreground(themeBrush(L"TextFillColorSecondaryBrush"));
+        StackPanel labels;
+        labels.Spacing(2);
+        Grid::SetColumn(labels, 1);
+        TextBlock title;
+        title.Text(text(name));
+        title.TextTrimming(TextTrimming::CharacterEllipsis);
+        StackPanel status;
+        status.Orientation(Orientation::Horizontal);
+        status.Spacing(6);
+        Shapes::Ellipse dot;
+        dot.Width(8);
+        dot.Height(8);
+        dot.VerticalAlignment(VerticalAlignment::Center);
+        dot.Fill(toneBrush(isActive ? Tone::good : Tone::pending));
+        TextBlock caption;
+        caption.Text(text(detail));
+        caption.Style(resourceStyle(L"SecondaryCaptionStyle"));
+        status.Children().Append(dot);
+        status.Children().Append(caption);
+        labels.Children().Append(title);
+        labels.Children().Append(status);
+        Grid badge;
+        Grid::SetColumn(badge, 2);
+        Shapes::Ellipse circle;
+        circle.Width(30);
+        circle.Height(30);
+        circle.Fill(channelBrush(channel));
+        circle.Opacity(isActive ? 1.0 : 0.4);
+        TextBlock letters;
+        letters.Text(channel == asyncmusic::SpeakerChannel::left ? L"L" : channel == asyncmusic::SpeakerChannel::right ? L"R" : L"LR");
+        letters.FontSize(channel == asyncmusic::SpeakerChannel::full ? 10 : 13);
+        letters.FontWeight(Microsoft::UI::Text::FontWeights::Bold());
+        letters.Foreground(channel == asyncmusic::SpeakerChannel::full ? themeBrush(L"TextFillColorSecondaryBrush") : colorBrush(0xFF, 0xFF, 0xFF));
+        letters.HorizontalAlignment(HorizontalAlignment::Center);
+        letters.VerticalAlignment(VerticalAlignment::Center);
+        badge.Children().Append(circle);
+        badge.Children().Append(letters);
+        row.Children().Append(icon);
+        row.Children().Append(labels);
+        row.Children().Append(badge);
+        deviceList().Children().Append(row);
+    };
+    addDevice(state.identity.name, "This device · Host", L"\uE7F8", true, state.channel);
+    for (const auto& member : state.members) {
+        const auto channel = state.activeChannels.find(member.id);
+        addDevice(member.name, member.isActive ? "Connected" : "Not responding", L"\uE7F5", member.isActive,
+            channel == state.activeChannels.end() ? asyncmusic::SpeakerChannel::full : channel->second);
+    }
+    if (state.members.empty()) {
+        TextBlock hint;
+        hint.Text(L"No other devices yet. Open AsyncMusic on another device on this network and choose Join as Speaker.");
+        hint.Style(resourceStyle(L"SecondaryCaptionStyle"));
+        deviceList().Children().Append(hint);
+    }
+}
+
+/// Offers this device and every member for each side, selecting the assigned one.
+void MainWindow::refreshDevicePickers(const GroupSession::Snapshot& state) {
+    std::vector<std::pair<uint64_t, std::string>> candidates{{state.identity.id, state.identity.name}};
+    for (const auto& member : state.members) candidates.emplace_back(member.id, member.name);
+    isUpdatingPickers_ = true;
+    for (auto [picker, channel] : {std::pair{leftDevice(), asyncmusic::SpeakerChannel::left}, std::pair{rightDevice(), asyncmusic::SpeakerChannel::right}}) {
+        if (candidates != candidates_) {
+            picker.Items().Clear();
+            for (const auto& [id, name] : candidates) picker.Items().Append(box_value(text(name)));
+        }
+        int selected = -1;
+        const auto device = state.speakers.assignments.find(channel);
+        for (size_t i = 0; device != state.speakers.assignments.end() && i < candidates.size(); ++i) {
+            if (candidates[i].first == device->second) selected = static_cast<int>(i);
+        }
+        if (picker.SelectedIndex() != selected) picker.SelectedIndex(selected);
+    }
+    candidates_ = candidates;
+    isUpdatingPickers_ = false;
+}
+
 void MainWindow::refreshDiagnostics(const GroupSession::Snapshot& state) {
     rows_.role.Text(text(roleTitle(state.role)));
     rows_.device.Text(text(state.identity.name));
     rows_.deviceID.Text(text(std::format("{:016x}", state.identity.id)));
     rows_.status.Text(text(state.status));
+
+    const bool leading = state.role == GroupSession::Role::leader;
+    leaderSection().Visibility(leading ? Visibility::Visible : Visibility::Collapsed);
+    rows_.followers.Text(text(std::to_string(state.followerCount)));
+    std::string members;
+    for (const auto& member : state.members) {
+        members += (members.empty() ? "" : "\n") + member.name + (member.isActive ? "" : " (not responding)");
+    }
+    rows_.members.Text(text(members.empty() ? "–" : members));
+    rows_.clockPort.Text(state.leaderPort != 0 ? text(std::to_string(state.leaderPort)) : hstring(L"–"));
+    const std::string advertisingError = engine_->advertisingError();
+    rows_.advertising.Text(text(!advertisingError.empty() ? advertisingError : state.leaderPort != 0 ? "As “" + state.identity.name + "”" : "–"));
 
     const bool following = state.role == GroupSession::Role::follower;
     estimateSection().Visibility(following ? Visibility::Visible : Visibility::Collapsed);
@@ -454,9 +778,9 @@ void MainWindow::refreshDiagnostics(const GroupSession::Snapshot& state) {
 
     playbackSection().Visibility(state.role != GroupSession::Role::off ? Visibility::Visible : Visibility::Collapsed);
     outputSection().Visibility(state.role != GroupSession::Role::off ? Visibility::Visible : Visibility::Collapsed);
-    rows_.layout.Text(text(layoutTitle(state.remoteLayout)));
+    rows_.layout.Text(text(layoutTitle(leading ? state.speakers.layout : state.remoteLayout)));
     rows_.channel.Text(text(channelTitle(state.channel)));
-    rows_.now.Text(text(state.playback.isPlaying() ? GroupSession::describe(state.playback.source) + (state.isWaitingForAudio ? " (waiting for audio)" : "") : "Stopped"));
+    rows_.now.Text(text(state.playback.isPlaying() ? engine_->session().describe(state.playback.source) + (state.isWaitingForAudio ? " (waiting for audio)" : "") : "Stopped"));
 
     const auto output = engine_->output().status();
     rows_.outputDevice.Text(text(output.deviceName.empty() ? "–" : output.deviceName));
@@ -483,6 +807,21 @@ void MainWindow::refreshDiagnostics(const GroupSession::Snapshot& state) {
 
 /// Values that change continuously: render statistics and the leader's clock.
 void MainWindow::refreshLive(const GroupSession::Snapshot& state) {
+    if (page_ == Page::host) {
+        // How far the playing file has got.
+        const bool showsProgress = state.playback.isPlaying() && state.selectedTrack && state.selectedTrack->id == state.playback.source;
+        progressPanel().Visibility(showsProgress ? Visibility::Visible : Visibility::Collapsed);
+        if (showsProgress) {
+            const double duration = std::max(state.selectedTrack->duration, 1.0);
+            const asyncmusic::RenderStats stats = engine_->session().renderer().latestStats();
+            const double elapsed = stats.isPlaying ? std::clamp(stats.mediaSeconds, 0.0, duration) : 0;
+            trackProgress().Maximum(duration);
+            trackProgress().Value(elapsed);
+            elapsedText().Text(text(minutesAndSeconds(elapsed)));
+            remainingText().Text(text("-" + minutesAndSeconds(duration - elapsed)));
+        }
+        return;
+    }
     if (page_ != Page::diagnostics) return;
     if (state.clockMap) {
         const int64_t leaderTime = state.clockMap->leaderTimeFromLocal(asyncmusic::hostClockNanoseconds());
@@ -577,7 +916,7 @@ std::string MainWindow::report() const {
     report += std::format("Role: {} · {}\n", roleTitle(state.role), state.status);
     report += std::format("Output: {} · {} · {:.0f} Hz, buffer {:.1f} ms, timestamp jitter {:.0f} µs, extra delay {:+.1f} ms\n", output.deviceName,
         output.isRunning ? "running" : ("stopped " + output.error), output.sampleRate, output.bufferDuration * 1e3, output.timestampJitter, engine_->manualOffset());
-    report += std::format("Playing: {}{} · channel {}\n", state.playback.isPlaying() ? GroupSession::describe(state.playback.source) : "nothing",
+    report += std::format("Playing: {}{} · channel {}\n", state.playback.isPlaying() ? engine_->session().describe(state.playback.source) : "nothing",
         state.isWaitingForAudio ? " (waiting for audio)" : "", channelTitle(state.channel));
     report += std::format("Render: playing {}, position {:.3f} s, error {:+.0f} µs, correction {:+.1f} ppm, buffered {:.1f} s, gaps {}, repositions {}, peak {:.4f}, host time {}\n",
         stats.isPlaying ? "yes" : "no", stats.mediaSeconds, stats.errorMicroseconds, stats.correctionPPM, stats.bufferedSeconds, stats.gaps, stats.jumps, stats.outputPeak,
