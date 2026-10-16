@@ -5,3 +5,12 @@ build/
 *.xcuserstate
 .build/
 .swiftpm/
+Core/build-*/
+Windows/packages/
+Windows/x64/
+Windows/ARM64/
+Windows/*/x64/
+Windows/*/ARM64/
+Windows/build-*/
+.vs/
+*.vcxproj.user

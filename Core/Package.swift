@@ -18,9 +18,11 @@ let package = Package(
         .target(
             name: "AsyncMusicCore",
             path: ".",
-            exclude: ["tests", "CMakeLists.txt", "README.md"],
-            sources: ["src"],
-            publicHeadersPath: "include"
+            exclude: ["tests", "CMakeLists.txt", "README.md", "third_party/alac/LICENSE", "third_party/alac/README.md"],
+            sources: ["src", "third_party/alac"],
+            publicHeadersPath: "include",
+            cSettings: [.headerSearchPath("third_party/alac"), .unsafeFlags(["-w"])],
+            cxxSettings: [.headerSearchPath("third_party/alac")]
         ),
     ],
     cxxLanguageStandard: .cxx17

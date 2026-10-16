@@ -5,14 +5,22 @@
 
 // Self-contained tests for the core; no framework needed so they build anywhere CMake does.
 
+#include <asyncmusic/alac.hpp>
 #include <asyncmusic/asyncmusic.hpp>
+#include <asyncmusic/audio_stream.hpp>
+#include <asyncmusic/clock_sync.hpp>
+#include <asyncmusic/net.hpp>
+#include <asyncmusic/serial_queue.hpp>
+#include <asyncmusic/session.hpp>
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <functional>
 #include <limits>
+#include <mutex>
 #include <random>
 #include <string>
 #include <thread>
@@ -459,6 +467,405 @@ void pcm16RoundTripsAllValues() {
     CHECK(!buffer->readInterleavedPCM16(50, 10, interleaved.data()), "frames before the buffer are refused");
 }
 
+// MARK: - ALAC
+
+#include "fixtures/apple_alac_packets.inc"
+
+Bytes fromHex(const char* digits) {
+    Bytes bytes;
+    auto value = [](char c) { return c <= '9' ? c - '0' : c - 'a' + 10; };
+    for (; digits[0] != 0 && digits[1] != 0; digits += 2) {
+        bytes.push_back(static_cast<uint8_t>(value(digits[0]) << 4 | value(digits[1])));
+    }
+    return bytes;
+}
+
+/// The signal `fixtures/generate_apple_alac.swift` encoded: a sawtooth with a little noise,
+/// interleaved stereo.
+std::vector<int16_t> alacTestSignal(int frames) {
+    std::vector<int16_t> samples(static_cast<size_t>(frames) * 2);
+    uint32_t state = 12345;
+    for (int i = 0; i < frames; ++i) {
+        state = state * 1664525u + 1013904223u;
+        const int left = (i % 100) * 600 - 30000 + static_cast<int>((state >> 24) & 0x3F) - 32;
+        const int right = left / 2 + static_cast<int>((state >> 8) & 0x0F) - 8;
+        samples[static_cast<size_t>(2 * i)] = static_cast<int16_t>(left);
+        samples[static_cast<size_t>(2 * i + 1)] = static_cast<int16_t>(right);
+    }
+    return samples;
+}
+
+/// Decodes `packet` and compares it with `expected` (interleaved, from `frame` on).
+bool alacDecodesExactly(ALACDecoder& decoder, const Bytes& packet, int frames, const int16_t* expected) {
+    std::vector<float> left(kALACFramesPerPacket), right(kALACFramesPerPacket);
+    if (!decoder.decode(packet.data(), packet.size(), frames, left.data(), right.data())) {
+        return false;
+    }
+    for (int i = 0; i < frames; ++i) {
+        if (toPCM16(left[static_cast<size_t>(i)]) != expected[2 * i] || toPCM16(right[static_cast<size_t>(i)]) != expected[2 * i + 1]) {
+            std::printf("  first difference at frame %d\n", i);
+            return false;
+        }
+    }
+    return true;
+}
+
+/// Apple hosts stream packets from AudioConverter; the reference decoder must reproduce them
+/// bit for bit.
+void alacDecodesApplePackets() {
+    const Bytes cookie = fromHex(kAppleALACCookie);
+    const Bytes packets[] = {fromHex(kAppleALACPacket0), fromHex(kAppleALACPacket1)};
+    const std::vector<int16_t> signal = alacTestSignal(kAppleALACPacketFrames[0] + kAppleALACPacketFrames[1]);
+    ALACDecoder decoder;
+    CHECK(decoder.configure(cookie.data(), cookie.size()), "Apple cookie accepted");
+    CHECK(alacDecodesExactly(decoder, packets[0], kAppleALACPacketFrames[0], signal.data()), "full packet");
+    CHECK(alacDecodesExactly(decoder, packets[1], kAppleALACPacketFrames[1], signal.data() + 2 * kAppleALACPacketFrames[0]), "partial packet");
+
+    std::vector<float> left(kALACFramesPerPacket), right(kALACFramesPerPacket);
+    CHECK(!decoder.decode(packets[1].data(), packets[1].size(), kAppleALACPacketFrames[1] + 1, left.data(), right.data()), "frame count mismatch rejected");
+}
+
+void alacRoundTrips() {
+    ALACEncoder encoder(kAppleALACSampleRate);
+    CHECK(encoder.magicCookie().size() == 24, "cookie size %zu", encoder.magicCookie().size());
+    // Same stream parameters as Apple's encoder, so either side can decode the other's packets.
+    // Only maxFrameBytes (bytes 12...15), which Apple fills in and decoders ignore, differs.
+    Bytes cookie = encoder.magicCookie();
+    std::copy_n(fromHex(kAppleALACCookie).begin() + 12, 4, cookie.begin() + 12);
+    CHECK(hex(cookie) == kAppleALACCookie, "cookie %s", hex(encoder.magicCookie()).c_str());
+    ALACDecoder decoder;
+    CHECK(decoder.configure(encoder.magicCookie().data(), encoder.magicCookie().size()), "own cookie accepted");
+
+    std::vector<int16_t> extremes(2 * kALACFramesPerPacket);
+    for (size_t i = 0; i < extremes.size(); ++i) {
+        extremes[i] = (i / 3) % 2 == 0 ? INT16_MIN : INT16_MAX;
+    }
+    const std::vector<int16_t> silence(2 * kALACFramesPerPacket, 0);
+    const std::vector<int16_t> signal = alacTestSignal(kALACFramesPerPacket);
+    SplitMix64 random{7};
+    std::vector<int16_t> noise(2 * kALACFramesPerPacket);
+    for (auto& sample : noise) {
+        sample = static_cast<int16_t>(random.next());
+    }
+    const std::pair<const std::vector<int16_t>*, int> cases[] = {
+        {&signal, kALACFramesPerPacket}, {&signal, 1000}, {&silence, kALACFramesPerPacket}, {&extremes, kALACFramesPerPacket},
+        {&noise, kALACFramesPerPacket}, {&noise, 1}, {&signal, kALACFramesPerPacket},
+    };
+    Bytes packet;
+    for (const auto& [samples, frames] : cases) {
+        CHECK(encoder.encode(samples->data(), frames, packet), "encode %d frames", frames);
+        CHECK(alacDecodesExactly(decoder, packet, frames, samples->data()), "round trip of %d frames", frames);
+    }
+    CHECK(!encoder.encode(signal.data(), kALACFramesPerPacket + 1, packet), "oversized chunk rejected");
+}
+
+void alacRejectsGarbage() {
+    ALACDecoder decoder;
+    const Bytes cookie = fromHex(kAppleALACCookie);
+    CHECK(!decoder.configure(cookie.data(), 8), "short cookie rejected");
+    Bytes mono = cookie;
+    mono[9] = 1;  // numChannels
+    CHECK(!decoder.configure(mono.data(), mono.size()), "mono cookie rejected");
+    std::vector<float> left(kALACFramesPerPacket), right(kALACFramesPerPacket);
+    CHECK(!decoder.decode(cookie.data(), cookie.size(), 10, left.data(), right.data()), "unconfigured decoder refuses");
+
+    CHECK(decoder.configure(cookie.data(), cookie.size()), "configure");
+    const Bytes packet = fromHex(kAppleALACPacket1);
+    // Truncated and corrupted packets must fail (or decode to something) without crashing.
+    for (size_t length = 1; length < packet.size(); length += 7) {
+        decoder.decode(packet.data(), length, kAppleALACPacketFrames[1], left.data(), right.data());
+    }
+    SplitMix64 random{99};
+    for (int round = 0; round < 2000; ++round) {
+        Bytes corrupted = packet;
+        for (int flips = 0; flips < 4; ++flips) {
+            corrupted[random.next() % corrupted.size()] ^= static_cast<uint8_t>(1u << (random.next() % 8));
+        }
+        decoder.decode(corrupted.data(), corrupted.size(), kAppleALACPacketFrames[1], left.data(), right.data());
+    }
+}
+
+// MARK: - Networking
+
+/// Polls `condition` for up to `seconds`.
+bool waitUntil(const std::function<bool()>& condition, double seconds) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::duration<double>(seconds);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (condition()) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return condition();
+}
+
+void serialQueueOrdersTasks() {
+    SerialQueue queue("test");
+    std::vector<int> order;
+    std::mutex mutex;
+    const auto push = [&](int value) {
+        std::lock_guard<std::mutex> lock(mutex);
+        order.push_back(value);
+    };
+    queue.asyncAfter(30'000'000, [&] { push(3); });
+    queue.asyncAfter(10'000'000, [&] { push(2); });
+    queue.async([&] { push(1); });
+    queue.sync([&] { push(0); });
+    CHECK(waitUntil([&] { std::lock_guard<std::mutex> lock(mutex); return order.size() == 4; }, 2), "all tasks ran");
+    std::lock_guard<std::mutex> lock(mutex);
+    CHECK((order == std::vector<int>{1, 0, 2, 3}), "order %d %d %d %d", order[0], order[1], order[2], order[3]);
+}
+
+/// A minimal leader on loopback: answers pings on a clock `offset` ahead of ours and answers
+/// every hello with playback, the audio port and a speaker channel, like the Apple leader.
+class FakeLeader {
+public:
+    explicit FakeLeader(int64_t offset, PlaybackState playback = PlaybackState{kPlaybackSourceMetronome, 123'456, 0}, uint16_t audioPort = 5555)
+        : playback(playback), offset_(offset), audioPort_(audioPort) {
+        socket_.open(net::Address::fromString("127.0.0.1", 0)->family());
+        socket_.bind(0);
+        port = socket_.localAddress().port();
+        thread_ = std::thread([this] { run(); });
+    }
+    ~FakeLeader() {
+        stop_ = true;
+        thread_.join();
+    }
+
+    uint16_t port = 0;
+    std::atomic<bool> answering{true};
+    std::atomic<int> hellos{0};
+    std::atomic<uint64_t> helloDevice{0};
+    const PlaybackState playback;
+
+private:
+    void run() {
+        uint8_t buffer[512];
+        while (!stop_) {
+            net::Address from;
+            const int size = socket_.receive(buffer, sizeof(buffer), 20, &from);
+            const int64_t t1 = hostClockNanoseconds() + offset_;
+            ClockSyncMessage message;
+            if (size <= 0 || !answering || !ClockSyncMessage::decode(buffer, static_cast<size_t>(size), message)) continue;
+            if (message.type == ClockSyncMessage::Type::ping) {
+                send(ClockSyncMessage::makePong(message.sequence, 42, message.t0, t1, hostClockNanoseconds() + offset_), from);
+            } else if (message.type == ClockSyncMessage::Type::hello) {
+                ++hellos;
+                helloDevice = message.device;
+                send(ClockSyncMessage::makePlayback(1, 42, playback), from);
+                send(ClockSyncMessage::makeAudioPort(42, audioPort_), from);
+                send(ClockSyncMessage::makeSpeakers(1, 42, SpeakerLayout::stereoPair, SpeakerChannel::right, 777), from);
+            }
+        }
+    }
+    void send(const ClockSyncMessage& message, const net::Address& to) {
+        const Bytes bytes = message.encode();
+        socket_.sendTo(bytes.data(), bytes.size(), to);
+    }
+
+    const int64_t offset_;
+    const uint16_t audioPort_;
+    net::UDPSocket socket_;
+    std::atomic<bool> stop_{false};
+    std::thread thread_;
+};
+
+ClockSyncFollower::Configuration fastFollower() {
+    ClockSyncFollower::Configuration configuration;
+    configuration.probeSpacing = 2'000'000;
+    configuration.replyGrace = 30'000'000;
+    configuration.warmupRounds = 1000;
+    configuration.warmupInterval = 20'000'000;
+    configuration.silentRoundsBeforeReconnect = 3;
+    configuration.reconnectDelay = 50'000'000;
+    return configuration;
+}
+
+void followerSyncsWithLeader() {
+    const int64_t offset = 5'000'000'000;
+    FakeLeader leader(offset);
+    std::atomic<int> resolves{0};
+    const auto resolver = [&]() -> std::optional<net::Address> {
+        ++resolves;
+        return net::Address::fromString("127.0.0.1", leader.port);
+    };
+    ClockSyncFollower follower(resolver, DeviceIdentity{0xD00D, "Test"}, fastFollower());
+
+    std::mutex mutex;
+    std::optional<ClockMap> map;
+    std::vector<PlaybackState> playbacks;
+    std::vector<net::Address> endpoints;
+    std::vector<std::pair<SpeakerChannel, int64_t>> channels;
+    std::vector<ClockSyncFollower::State> states;
+    follower.onRound = [&](const ClockSyncRound& round) {
+        std::lock_guard<std::mutex> lock(mutex);
+        map = round.map;
+    };
+    follower.onPlayback = [&](const PlaybackState& state) {
+        std::lock_guard<std::mutex> lock(mutex);
+        playbacks.push_back(state);
+    };
+    follower.onAudioEndpoint = [&](const net::Address& endpoint) {
+        std::lock_guard<std::mutex> lock(mutex);
+        endpoints.push_back(endpoint);
+    };
+    follower.onSpeakers = [&](SpeakerLayout, SpeakerChannel channel, int64_t time) {
+        std::lock_guard<std::mutex> lock(mutex);
+        channels.emplace_back(channel, time);
+    };
+    follower.onStateChange = [&](ClockSyncFollower::State state, const std::string&) {
+        std::lock_guard<std::mutex> lock(mutex);
+        states.push_back(state);
+    };
+    follower.start();
+
+    CHECK(waitUntil([&] { return leader.hellos >= 5; }, 5), "hellos %d", leader.hellos.load());
+    CHECK(waitUntil([&] { std::lock_guard<std::mutex> lock(mutex); return map.has_value(); }, 5), "a clock map");
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        const int64_t error = map ? map->offsetAtLocal(hostClockNanoseconds()) - offset : -1;
+        CHECK(map && std::llabs(error) < 1'000'000, "offset error %lldns", static_cast<long long>(error));
+        CHECK(leader.helloDevice == 0xD00D, "hello device");
+        CHECK(playbacks.size() == 1 && playbacks[0] == leader.playback, "playback once, repeats ignored (%zu)", playbacks.size());
+        CHECK(endpoints.size() == 1 && endpoints[0].toString() == "127.0.0.1:5555", "audio endpoint %s", endpoints.empty() ? "-" : endpoints[0].toString().c_str());
+        CHECK(channels.size() == 1 && channels[0].first == SpeakerChannel::right && channels[0].second == 777, "speakers once");
+        CHECK(!states.empty() && states.back() == ClockSyncFollower::State::syncing, "syncing");
+    }
+
+    // A leader that stops answering is looked up again.
+    const int resolvesBefore = resolves;
+    leader.answering = false;
+    CHECK(waitUntil([&] { return resolves > resolvesBefore; }, 5), "reconnects after silence");
+    leader.answering = true;
+    CHECK(waitUntil([&] { std::lock_guard<std::mutex> lock(mutex); return !states.empty() && states.back() == ClockSyncFollower::State::syncing; }, 5), "syncing again");
+    follower.stop();
+    std::lock_guard<std::mutex> lock(mutex);
+    CHECK(!states.empty() && states.back() == ClockSyncFollower::State::stopped, "stopped");
+}
+
+void audioStreamClientReceives() {
+    net::TCPListener listener;
+    CHECK(listener.listen(net::Address::fromString("127.0.0.1", 0)->family(), 0), "listen");
+    const uint16_t port = listener.localAddress().port();
+    const int frames[] = {4096, 4096, 100};
+    const int total = 4096 + 4096 + 100;
+    const std::vector<int16_t> signal = alacTestSignal(total);
+    std::atomic<int64_t> reported{0};
+
+    std::thread server([&] {
+        net::TCPSocket connection = listener.accept(5000);
+        if (!connection.isOpen()) return;
+        const auto send = [&](const AudioStreamMessage& message) {
+            const Bytes bytes = message.framed();
+            connection.sendAll(bytes.data(), bytes.size());
+        };
+        ALACEncoder encoder(48000);
+        send(AudioStreamMessage::makeStreamStart(9, 77, 48000, 1000, AudioStreamCodec::alac, encoder.magicCookie()));
+        // A chunk of another stream, still in flight after a switch, is ignored.
+        send(AudioStreamMessage::makeAudio(8, 0, 1, Bytes{0, 0, 0, 0}));
+        int64_t frame = 1000;
+        int offset = 0;
+        for (int count : frames) {
+            Bytes packet;
+            encoder.encode(signal.data() + 2 * offset, count, packet);
+            send(AudioStreamMessage::makeAudio(9, frame, count, packet));
+            frame += count;
+            offset += count;
+        }
+        // Then a PCM stream.
+        send(AudioStreamMessage::makeStreamStart(10, 78, 44100, -50, AudioStreamCodec::pcm16, Bytes{}));
+        Bytes pcm(4 * 10);
+        for (int i = 0; i < 10; ++i) {
+            pcm[static_cast<size_t>(4 * i)] = static_cast<uint8_t>(i);
+        }
+        send(AudioStreamMessage::makeAudio(10, -50, 10, pcm));
+        // Read the client's buffer reports until it hangs up.
+        std::atomic<bool> stop{false};
+        uint8_t header[4];
+        while (connection.readExactly(header, 4, stop) == net::TCPSocket::ReadResult::ok) {
+            Bytes body(static_cast<size_t>(AudioStreamMessage::bodyLength(header, 4)));
+            if (connection.readExactly(body.data(), body.size(), stop) != net::TCPSocket::ReadResult::ok) break;
+            AudioStreamMessage message;
+            if (AudioStreamMessage::decodeBody(body.data(), body.size(), message) && message.type == AudioStreamMessage::Type::bufferReport && message.streamID == 9) {
+                reported = message.frame;
+            }
+        }
+    });
+
+    AudioStreamClient client(*net::Address::fromString("127.0.0.1", port));
+    std::mutex mutex;
+    std::vector<std::pair<uint64_t, Ref<StreamBuffer>>> streams;
+    client.onStream = [&](uint64_t source, const Ref<StreamBuffer>& buffer) {
+        std::lock_guard<std::mutex> lock(mutex);
+        streams.emplace_back(source, buffer);
+    };
+    client.start();
+    CHECK(waitUntil([&] {
+        std::lock_guard<std::mutex> lock(mutex);
+        return streams.size() == 2 && streams[1].second->endFrame() == -40;
+    }, 5), "both streams received");
+    CHECK(waitUntil([&] { return reported == 1000 + total; }, 5), "buffer reported through %lld", static_cast<long long>(reported.load()));
+    client.stop();
+    server.join();
+
+    std::lock_guard<std::mutex> lock(mutex);
+    if (streams.size() != 2) return;
+    const Ref<StreamBuffer>& first = streams[0].second;
+    CHECK(streams[0].first == 77 && first->sampleRate() == 48000, "first stream");
+    CHECK(first->validRange().lowerBound == 1000 && first->endFrame() == 1000 + total, "first stream range");
+    bool exact = true;
+    for (int i = 0; i < total && exact; ++i) {
+        const StereoSample sample = first->sampleAt(1000 + i);
+        exact = toPCM16(sample.left) == signal[static_cast<size_t>(2 * i)] && toPCM16(sample.right) == signal[static_cast<size_t>(2 * i + 1)];
+    }
+    CHECK(exact, "ALAC stream bit-exact");
+    CHECK(streams[1].first == 78 && toPCM16(streams[1].second->sampleAt(-45).left) == 5, "PCM stream");
+}
+
+/// A follower session end to end: clock sync, the leader's playback, its speaker channel and its
+/// audio stream.
+void sessionFollowsLeader() {
+    net::TCPListener listener;
+    listener.listen(net::Address::fromString("127.0.0.1", 0)->family(), 0);
+    const uint64_t file = 0xF11E;
+    FakeLeader leader(1'000'000'000, PlaybackState{file, hostClockNanoseconds() + 1'000'000'000, 0}, listener.localAddress().port());
+    std::thread server([&] {
+        net::TCPSocket connection = listener.accept(5000);
+        const Bytes start = AudioStreamMessage::makeStreamStart(1, file, 48000, 0, AudioStreamCodec::pcm16, Bytes{}).framed();
+        const Bytes audio = AudioStreamMessage::makeAudio(1, 0, 4, Bytes(16, 0)).framed();
+        connection.sendAll(start.data(), start.size());
+        connection.sendAll(audio.data(), audio.size());
+        // Hold the connection until the client hangs up.
+        std::atomic<bool> stop{false};
+        uint8_t byte;
+        while (connection.readExactly(&byte, 1, stop) == net::TCPSocket::ReadResult::ok) {
+        }
+    });
+
+    {
+        GroupSession session(DeviceIdentity{7, "Session Test"});
+        std::atomic<int> changes{0};
+        session.onChange = [&] { ++changes; };
+        session.setRole(GroupSession::Role::follower);
+        session.follow("Fake", [&] { return net::Address::fromString("127.0.0.1", leader.port); });
+        const bool ready = waitUntil([&] {
+            const auto state = session.snapshot();
+            return state.clockMap && state.isAudioConnected && state.playback == leader.playback && !state.isWaitingForAudio
+                && state.channel == SpeakerChannel::right;
+        }, 10);
+        const auto state = session.snapshot();
+        CHECK(ready, "map %d audio %d playback %d waiting %d channel %d", state.clockMap.has_value(), state.isAudioConnected,
+            state.playback == leader.playback, state.isWaitingForAudio, static_cast<int>(state.channel));
+        CHECK(state.connectedLeader == std::string("Fake") && state.followerState == ClockSyncFollower::State::syncing, "following");
+        CHECK(state.remoteLayout == SpeakerLayout::stereoPair && !state.rounds.empty() && !state.log.empty() && changes > 0, "state published");
+
+        session.setRole(GroupSession::Role::off);
+        CHECK(waitUntil([&] {
+            const auto state = session.snapshot();
+            return state.role == GroupSession::Role::off && !state.connectedLeader && !state.playback.isPlaying() && state.channel == SpeakerChannel::full;
+        }, 5), "left the group");
+    }
+    server.join();
+}
+
 void playbackPosition() {
     Ref<PlaybackPosition> position = Ref<PlaybackPosition>::adopt(PlaybackPosition::create());
     int64_t media = 0;
@@ -496,6 +903,13 @@ int main() {
     run("protocol: golden bytes", protocolMatchesGoldenBytes);
     run("protocol: round trips", protocolRoundTrips);
     run("pcm16: round trips", pcm16RoundTripsAllValues);
+    run("alac: decodes Apple's packets", alacDecodesApplePackets);
+    run("alac: round trips", alacRoundTrips);
+    run("alac: rejects garbage", alacRejectsGarbage);
+    run("serial queue", serialQueueOrdersTasks);
+    run("follower: syncs with a leader", followerSyncsWithLeader);
+    run("stream client: receives ALAC and PCM", audioStreamClientReceives);
+    run("session: follows a leader", sessionFollowsLeader);
     run("playback position", playbackPosition);
     run("host clock", sleepClock);
     std::printf("%s\n", failures == 0 ? "All tests passed." : "Some tests FAILED.");
