@@ -2,7 +2,7 @@
 
 The platform-independent part of AsyncMusic's synchronized playback, in portable C++17 with no
 dependencies beyond the vendored ALAC codec. The Apple app uses it through Swift's C++
-interoperability; other platforms (Windows so far, see `../Windows`) link it directly.
+interoperability; other platforms (`../Windows`, `../Android`) link it directly.
 
 | Header | What it does |
 |---|---|
@@ -62,10 +62,12 @@ loopback, the follower and stream client run against a fake leader, the core's l
 stream server against the core's follower and client, and a leading and a following
 `GroupSession` play a file with adaptive start and a stereo pair end to end.
 
-Two tools are built with the tests, for trying devices against each other without full apps:
+Three tools are built with the tests, for trying devices against each other without full apps:
 `tools/test_leader.cpp`, a bare-bones leader that plays the metronome or the channel test
-(optionally as one side of a stereo pair), and `tools/test_host.cpp`, which hosts a WAV file
-with `GroupSession` (an Apple device following it plays the ALAC stream).
+(optionally as one side of a stereo pair), `tools/test_host.cpp`, which hosts a WAV file
+with `GroupSession` (an Apple device following it plays the ALAC stream), and
+`tools/test_follower.cpp`, which follows a host at a given address and prints how its clock and
+stream arrive (rendering into nothing).
 
 ## Real-time rules
 
