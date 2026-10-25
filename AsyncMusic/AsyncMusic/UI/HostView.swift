@@ -11,6 +11,9 @@ import UniformTypeIdentifiers
 struct HostView: View {
     let session: ClockSyncSession
     @State private var isImportingFile = false
+    #if os(macOS)
+    @State private var isChoosingApp = false
+    #endif
 
     var body: some View {
         ScrollView {
@@ -18,7 +21,11 @@ struct HostView: View {
                 if session.isLocalNetworkDenied {
                     LocalNetworkBanner()
                 }
-                NowPlayingCard(session: session) { isImportingFile = true }
+                NowPlayingCard(session: session, chooseMusic: { isImportingFile = true }, chooseAppAudio: {
+                    #if os(macOS)
+                    isChoosingApp = true
+                    #endif
+                })
                 layoutCard
                 if session.speakerLayout == .stereoPair {
                     StereoPairCard(session: session)
@@ -33,6 +40,9 @@ struct HostView: View {
             .readableColumn()
         }
         .navigationTitle("Hosting")
+        #if os(macOS)
+        .sheet(isPresented: $isChoosingApp) { AudioApplicationPicker(session: session) }
+        #endif
         .fileImporter(isPresented: $isImportingFile, allowedContentTypes: [.audio]) { result in
             if case let .success(url) = result {
                 session.loadTrack(from: url)
@@ -59,9 +69,22 @@ struct HostView: View {
 private struct NowPlayingCard: View {
     let session: ClockSyncSession
     var chooseMusic: () -> Void
+    var chooseAppAudio: () -> Void
 
     private var playback: PlaybackState { session.player.playback }
     private var isPlaying: Bool { playback.isPlaying() }
+    private var isActive: Bool {
+        #if os(macOS)
+        if session.applicationAudio.isCapturing { return true }
+        #endif
+        return isPlaying
+    }
+    private var hasSelection: Bool {
+        #if os(macOS)
+        if session.applicationAudio.selected != nil { return true }
+        #endif
+        return session.selectedTrack != nil
+    }
 
     var body: some View {
         Card {
@@ -82,34 +105,53 @@ private struct NowPlayingCard: View {
                 PlaybackProgress(player: session.player, duration: file.duration)
             }
 
+            #if os(macOS)
+            if let error = session.applicationAudio.error {
+                Text(error).font(.callout).foregroundStyle(.red).textSelection(.enabled)
+            }
+            #endif
+
             HStack {
-                Button(action: chooseMusic) {
-                    Label("Choose Music", systemImage: "music.note.list")
-                }
-                .buttonStyle(.bordered)
-                .disabled(session.isLoadingTrack)
+                sourcePicker
 
                 Spacer()
 
                 Button {
-                    if isPlaying {
+                    if isActive {
                         session.stopPlayback()
-                    } else if let track = session.selectedTrack {
-                        session.play(source: track.id)
+                    } else {
+                        session.playSelectedSource()
                     }
                 } label: {
-                    Image(systemName: isPlaying ? "stop.fill" : "play.fill")
+                    Image(systemName: isActive ? "stop.fill" : "play.fill")
                         .font(.title2)
                         .frame(width: 44, height: 44)
                         .contentTransition(.symbolEffect(.replace))
                 }
                 .buttonStyle(.borderedProminent)
                 .buttonBorderShape(.circle)
-                .disabled(!isPlaying && session.selectedTrack == nil)
+                .disabled(!isActive && !hasSelection)
                 .keyboardShortcut(.space, modifiers: [])
-                .accessibilityLabel(isPlaying ? "Stop" : "Play")
+                .accessibilityLabel(isActive ? "Stop" : "Play")
             }
         }
+    }
+
+    private var sourcePicker: some View {
+        Group {
+            #if os(macOS)
+            Menu {
+                Button("Audio File…", systemImage: "music.note.list", action: chooseMusic)
+                Button("App Audio…", systemImage: "app.badge.waveform", action: chooseAppAudio)
+            } label: {
+                Label("Choose Source", systemImage: "music.note.list")
+            }
+            #else
+            Button(action: chooseMusic) { Label("Choose Music", systemImage: "music.note.list") }
+            #endif
+        }
+        .buttonStyle(.bordered)
+        .disabled(session.isLoadingTrack)
     }
 
     private var artwork: some View {
@@ -130,6 +172,12 @@ private struct NowPlayingCard: View {
     }
 
     private var title: String {
+        #if os(macOS)
+        if let application = session.applicationAudio.selected,
+           !isPlaying || session.player.liveStreamSource == playback.source {
+            return application.name
+        }
+        #endif
         if isPlaying {
             switch playback.source {
             case PlaybackSource.metronome: return "Metronome"
@@ -145,12 +193,19 @@ private struct NowPlayingCard: View {
             return "Loading…"
         }
         if session.isPreparingPlayback {
+            #if os(macOS)
+            if session.applicationAudio.isWaitingForAudio { return "Waiting for app audio…" }
+            if session.applicationAudio.isStarting { return "Connecting to app audio…" }
+            #endif
             return "Getting speakers ready…"
         }
         if isPlaying {
             let count = 1 + session.members.filter(\.isActive).count
             return count == 1 ? "Playing on this device" : "Playing on \(count) devices"
         }
+        #if os(macOS)
+        if session.applicationAudio.selected != nil { return "App audio · Ready to share" }
+        #endif
         return session.selectedTrack == nil ? "Choose a song to start." : "Ready to play"
     }
 }

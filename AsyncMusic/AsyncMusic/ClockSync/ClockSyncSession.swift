@@ -43,6 +43,11 @@ final class ClockSyncSession {
     let identity = DeviceIdentity.current()
     var deviceName: String { identity.name }
     let player = SyncedPlayer()
+    #if os(macOS)
+    let applicationAudio = ApplicationAudioSource()
+    /// Covers capture, encoding, network transit and the group's output device latency.
+    private let liveAudioDelay: Int64 = 1_500_000_000
+    #endif
 
     /// How far ahead the leader schedules a start. Must comfortably exceed the time for the
     /// command to reach followers plus the largest output latency in the group (Bluetooth can
@@ -101,7 +106,12 @@ final class ClockSyncSession {
     }
 
     /// True while a file is being buffered on followers before it starts.
-    var isPreparingPlayback: Bool { pendingStart != nil }
+    var isPreparingPlayback: Bool {
+        #if os(macOS)
+        if applicationAudio.isStarting { return true }
+        #endif
+        return pendingStart != nil
+    }
 
     /// Whether every channel of the layout has a device that is present.
     var isLayoutComplete: Bool {
@@ -141,6 +151,20 @@ final class ClockSyncSession {
             }
         }
         channelAssignments = assignments
+        #if os(macOS)
+        applicationAudio.onReady = { [weak self] stream, source in
+            guard let self, self.role == .leader, let leader = self.leader else { return }
+            self.player.setLiveStream(stream.buffer, source: source)
+            let state = PlaybackState(source: source, startLeaderTime: stream.epoch + self.liveAudioDelay, startMediaTime: 0)
+            self.player.update(playback: state)
+            leader.setPlayback(state)
+            self.append("Sharing app audio from \(self.applicationAudio.selected?.name ?? "app")")
+        }
+        applicationAudio.onFailure = { [weak self] message in
+            self?.stopPlayback()
+            self?.append("App audio stopped: \(message)")
+        }
+        #endif
     }
 
     func setRole(_ newRole: Role) {
@@ -225,10 +249,33 @@ final class ClockSyncSession {
 
     // MARK: - Playback
 
+    func playSelectedSource() {
+        #if os(macOS)
+        if applicationAudio.selected != nil {
+            guard role == .leader else { return }
+            stopPlayback()
+            applicationAudio.start()
+            return
+        }
+        #endif
+        if let selectedTrack { play(source: selectedTrack.id) }
+    }
+
+    #if os(macOS)
+    func selectAudioApplication(_ application: AudioApplication) {
+        stopPlayback()
+        applicationAudio.select(application)
+    }
+    #endif
+
     /// Leader only: starts `source` from the top on every device. The metronome starts after
     /// `startLeadTime`; files start as soon as every follower has buffered enough.
     func play(source: UInt64) {
         guard role == .leader, let leader else { return }
+        #if os(macOS)
+        applicationAudio.stop()
+        player.clearLiveStream()
+        #endif
         pendingStart = nil
         guard !PlaybackSource.isGenerated(source) else {
             let state = PlaybackState(source: source, startLeaderTime: HostClock.now() + startLeadTime, startMediaTime: 0)
@@ -277,6 +324,10 @@ final class ClockSyncSession {
 
     /// Leader only: stops playback on every device.
     func stopPlayback() {
+        #if os(macOS)
+        applicationAudio.stop()
+        player.clearLiveStream()
+        #endif
         guard role == .leader, let leader else { return }
         pendingStart = nil
         endOfTrackTask?.cancel()
@@ -310,6 +361,10 @@ final class ClockSyncSession {
                     try MediaFile.load(contentsOf: url)
                 }.value
                 player.add(track)
+                #if os(macOS)
+                if applicationAudio.isCapturing { stopPlayback() }
+                applicationAudio.select(nil)
+                #endif
                 selectedTrack = track
                 append(String(format: "Loaded “%@” (%.1fs, id %016llx)", track.name, track.duration, track.id))
             } catch {
@@ -319,7 +374,10 @@ final class ClockSyncSession {
     }
 
     func describe(_ source: UInt64) -> String {
-        switch source {
+        #if os(macOS)
+        if source == applicationAudio.sourceID { return applicationAudio.selected?.name ?? "app audio" }
+        #endif
+        return switch source {
         case PlaybackSource.none: "nothing"
         case PlaybackSource.metronome: "metronome"
         case PlaybackSource.channelTest: "channel test"
@@ -464,6 +522,10 @@ final class ClockSyncSession {
         leader.onPlaybackReset = { [weak self] in
             DispatchQueue.main.async {
                 guard let self else { return }
+                #if os(macOS)
+                self.applicationAudio.stop()
+                self.player.clearLiveStream()
+                #endif
                 self.player.update(playback: .stopped())
                 self.append("This device slept; playback stopped and followers will resync")
             }
@@ -631,6 +693,10 @@ final class ClockSyncSession {
     // MARK: - Helpers
 
     private func tearDown() {
+        #if os(macOS)
+        applicationAudio.stop()
+        player.clearLiveStream()
+        #endif
         player.update(playback: .stopped())
         player.update(clockMap: nil)
         player.onOutgoingStream = nil

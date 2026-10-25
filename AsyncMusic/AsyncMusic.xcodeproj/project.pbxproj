@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A17000013000000000000001 /* MacAudioCapture in Frameworks */ = {isa = PBXBuildFile; platformFilter = macos; productRef = A17000033000000000000001 /* MacAudioCapture */; };
 		ED8185A030812036006FD72C /* AsyncMusicCore in Frameworks */ = {isa = PBXBuildFile; productRef = ED8185A230812036006FD72C /* AsyncMusicCore */; };
 /* End PBXBuildFile section */
 
@@ -26,6 +27,7 @@
 		ED81851930812036006FD72C /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			files = (
+				A17000013000000000000001 /* MacAudioCapture in Frameworks */,
 				ED8185A030812036006FD72C /* AsyncMusicCore in Frameworks */,
 			);
 		};
@@ -66,6 +68,7 @@
 			);
 			name = AsyncMusic;
 			packageProductDependencies = (
+				A17000033000000000000001 /* MacAudioCapture */,
 				ED8185A230812036006FD72C /* AsyncMusicCore */,
 			);
 			productName = AsyncMusic;
@@ -97,6 +100,7 @@
 			mainGroup = ED81851330812036006FD72C;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
+				A17000023000000000000001 /* XCLocalSwiftPackageReference "../MacAudioCapture" */,
 				ED8185A130812036006FD72C /* XCLocalSwiftPackageReference "../Core" */,
 			);
 			preferredProjectObjectVersion = 77;
@@ -251,6 +255,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = V8K4KDZ2JN;
 				ENABLE_APP_SANDBOX = YES;
+				"ENABLE_RESOURCE_ACCESS_AUDIO_INPUT[sdk=macosx*]" = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_INCOMING_NETWORK_CONNECTIONS = YES;
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
@@ -258,6 +263,7 @@
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Info.plist;
+				"INFOPLIST_FILE[sdk=macosx*]" = "Info-macOS.plist";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "AsyncMusic syncs its playback clock with other devices on your local network.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
@@ -300,6 +306,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = V8K4KDZ2JN;
 				ENABLE_APP_SANDBOX = YES;
+				"ENABLE_RESOURCE_ACCESS_AUDIO_INPUT[sdk=macosx*]" = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_INCOMING_NETWORK_CONNECTIONS = YES;
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
@@ -307,6 +314,7 @@
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Info.plist;
+				"INFOPLIST_FILE[sdk=macosx*]" = "Info-macOS.plist";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "AsyncMusic syncs its playback clock with other devices on your local network.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
@@ -362,6 +370,10 @@
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
+		A17000023000000000000001 /* XCLocalSwiftPackageReference "../MacAudioCapture" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../MacAudioCapture;
+		};
 		ED8185A130812036006FD72C /* XCLocalSwiftPackageReference "../Core" */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = ../Core;
@@ -369,6 +381,10 @@
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		A17000033000000000000001 /* MacAudioCapture */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MacAudioCapture;
+		};
 		ED8185A230812036006FD72C /* AsyncMusicCore */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = AsyncMusicCore;

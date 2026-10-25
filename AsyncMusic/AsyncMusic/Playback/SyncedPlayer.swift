@@ -52,7 +52,10 @@ final class SyncedPlayer {
 
     /// True when a file is playing that this device has neither locally nor from the leader.
     var isWaitingForAudio: Bool {
-        playback.isPlaying() && !PlaybackSource.isGenerated(playback.source)
+        #if os(macOS)
+        if liveStreamSource == playback.source { return false }
+        #endif
+        return playback.isPlaying() && !PlaybackSource.isGenerated(playback.source)
             && files[playback.source] == nil && remoteStreamSource != playback.source
     }
 
@@ -84,6 +87,10 @@ final class SyncedPlayer {
     /// keep using one until its next successful try-lock, so they are released after a delay.
     @ObservationIgnored private var retiredBuffers: [StreamBuffer] = []
     @ObservationIgnored private var remoteBuffer: StreamBuffer?
+    #if os(macOS)
+    @ObservationIgnored private var liveBuffer: StreamBuffer?
+    private(set) var liveStreamSource: UInt64?
+    #endif
 
     /// How far ahead of playback files are decoded.
     private let streamAheadDuration = 8.0
@@ -170,6 +177,33 @@ final class SyncedPlayer {
         }
     }
 
+    #if os(macOS)
+    /// A live source uses the same renderer and outgoing stream as a decoded file.
+    func setLiveStream(_ buffer: StreamBuffer, source: UInt64) {
+        clearLiveStream()
+        liveBuffer = buffer
+        liveStreamSource = source
+        if playback.source == source { applySource() }
+        onOutgoingStream?(OutgoingStream(id: .random(in: .min ... .max), source: source, buffer: buffer, position: position))
+    }
+
+    func clearLiveStream() {
+        guard let buffer = liveBuffer else { return }
+        liveBuffer = nil
+        liveStreamSource = nil
+        if playback.isPlaying() { applySource() }
+        retire(buffer)
+        onOutgoingStream?(nil)
+    }
+    #endif
+
+    private func localLiveBuffer(for source: UInt64) -> StreamBuffer? {
+        #if os(macOS)
+        if liveStreamSource == source { return liveBuffer }
+        #endif
+        return nil
+    }
+
     // MARK: - Engine
 
     private func configureGraph() throws {
@@ -248,6 +282,8 @@ final class SyncedPlayer {
             source = .metronome
         } else if playback.source == PlaybackSource.channelTest {
             source = .channelTest
+        } else if let buffer = localLiveBuffer(for: playback.source) {
+            source = .stream(buffer)
         } else if let file = files[playback.source] {
             source = startStream(for: file).map { .stream($0) } ?? .silence
         } else if let remoteBuffer, remoteStreamSource == playback.source {
