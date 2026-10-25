@@ -225,8 +225,9 @@ private:
     void tick();
     void broadcast();
     void sendPlayback(const net::Address& to);
-    void sendSpeakers(const Peer& peer);
-    void send(const ClockSyncMessage& message, const net::Address& to);
+    void sendSpeakers(const Peer& peer, int64_t delay = 0);
+    /// After `delay` nanoseconds, if given, via the queue.
+    void send(const ClockSyncMessage& message, const net::Address& to, int64_t delay = 0);
     void reportMembers();
 
     SerialQueue queue_;

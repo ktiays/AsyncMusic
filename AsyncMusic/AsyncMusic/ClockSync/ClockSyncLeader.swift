@@ -94,6 +94,10 @@ nonisolated final class ClockSyncLeader: @unchecked Sendable {
     /// A follower silent for longer than this counts as gone for its speaker channel (it is
     /// only dropped altogether after 10 s). Followers ping at least once a second.
     private let activeWindow: Int64 = 3_000_000_000
+    /// Gap between the datagrams of one follower's state. On some Wi-Fi networks a phone loses
+    /// nearly every datagram that arrives right behind another one, which kept the audio port
+    /// (sent straight after the playback state) from ever reaching it.
+    private let datagramSpacing = 10
 
     init(name: String) {
         self.name = name
@@ -220,12 +224,12 @@ nonisolated final class ClockSyncLeader: @unchecked Sendable {
     private func broadcastPlayback() {
         for (id, connection) in connections {
             sendPlayback(on: connection)
-            sendSpeakers(on: connection, id: id)
+            sendSpeakers(on: connection, id: id, afterMilliseconds: 2 * datagramSpacing)
         }
     }
 
     /// Sends the follower behind `connection` its channel, once it has said who it is.
-    private func sendSpeakers(on connection: NWConnection, id: ObjectIdentifier) {
+    private func sendSpeakers(on connection: NWConnection, id: ObjectIdentifier, afterMilliseconds delay: Int = 0) {
         guard let device = devices[id] else { return }
         let message = ClockSyncMessage.speakers(
             revision: speakersRevision,
@@ -234,7 +238,7 @@ nonisolated final class ClockSyncLeader: @unchecked Sendable {
             channel: channels[device.id] ?? .full,
             switchLeaderTime: channelSwitchTime
         )
-        connection.send(content: message.encoded(), completion: .idempotent)
+        send(message, on: connection, afterMilliseconds: delay)
     }
 
     private func reportMembers() {
@@ -256,7 +260,18 @@ nonisolated final class ClockSyncLeader: @unchecked Sendable {
         let message = ClockSyncMessage.playback(revision: playbackRevision, session: session, state: playback)
         connection.send(content: message.encoded(), completion: .idempotent)
         if let audioPort {
-            connection.send(content: ClockSyncMessage.audioPort(session: session, port: audioPort).encoded(), completion: .idempotent)
+            send(.audioPort(session: session, port: audioPort), on: connection, afterMilliseconds: datagramSpacing)
+        }
+    }
+
+    private func send(_ message: ClockSyncMessage, on connection: NWConnection, afterMilliseconds delay: Int) {
+        let content = message.encoded()
+        guard delay > 0 else {
+            connection.send(content: content, completion: .idempotent)
+            return
+        }
+        queue.asyncAfter(deadline: .now() + .milliseconds(delay)) {
+            connection.send(content: content, completion: .idempotent)
         }
     }
 
@@ -345,6 +360,6 @@ nonisolated final class ClockSyncLeader: @unchecked Sendable {
             reportMembers()
         }
         sendPlayback(on: connection)
-        sendSpeakers(on: connection, id: id)
+        sendSpeakers(on: connection, id: id, afterMilliseconds: 2 * datagramSpacing)
     }
 }

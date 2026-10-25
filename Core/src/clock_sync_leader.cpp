@@ -19,6 +19,10 @@ namespace {
 constexpr int64_t kActiveWindow = 3'000'000'000;
 /// Followers silent for this long are dropped altogether.
 constexpr int64_t kDropAfter = 10'000'000'000;
+/// Gap between the datagrams of one follower's state. On some Wi-Fi networks a phone loses
+/// nearly every datagram that arrives right behind another one, which kept the audio port
+/// (sent straight after the playback state) from ever reaching it.
+constexpr int64_t kDatagramSpacing = 10'000'000;
 
 uint64_t randomSession() {
     std::random_device device;
@@ -123,7 +127,7 @@ void ClockSyncLeader::heard(const net::Address& from, int64_t time, const ClockS
         reportMembers();
     }
     sendPlayback(from);
-    sendSpeakers(peer->second);
+    sendSpeakers(peer->second, 2 * kDatagramSpacing);
 }
 
 void ClockSyncLeader::tick() {
@@ -182,26 +186,30 @@ void ClockSyncLeader::setSpeakers(SpeakerLayout layout, const std::map<uint64_t,
 void ClockSyncLeader::broadcast() {
     for (const auto& [key, peer] : peers_) {
         sendPlayback(peer.address);
-        sendSpeakers(peer);
+        sendSpeakers(peer, 2 * kDatagramSpacing);
     }
 }
 
 /// The playback state, and the audio stream's port along with it.
 void ClockSyncLeader::sendPlayback(const net::Address& to) {
     send(ClockSyncMessage::makePlayback(playbackRevision_, session_.load(), playback_), to);
-    if (audioPort_ != 0) send(ClockSyncMessage::makeAudioPort(session_.load(), audioPort_), to);
+    if (audioPort_ != 0) send(ClockSyncMessage::makeAudioPort(session_.load(), audioPort_), to, kDatagramSpacing);
 }
 
 /// The follower's channel, once it has said who it is.
-void ClockSyncLeader::sendSpeakers(const Peer& peer) {
+void ClockSyncLeader::sendSpeakers(const Peer& peer, int64_t delay) {
     if (!peer.hasDevice) return;
     const auto channel = channels_.find(peer.device);
     send(ClockSyncMessage::makeSpeakers(speakersRevision_, session_.load(), layout_, channel == channels_.end() ? SpeakerChannel::full : channel->second,
              channelSwitchTime_),
-        peer.address);
+        peer.address, delay);
 }
 
-void ClockSyncLeader::send(const ClockSyncMessage& message, const net::Address& to) {
+void ClockSyncLeader::send(const ClockSyncMessage& message, const net::Address& to, int64_t delay) {
+    if (delay > 0) {
+        queue_.asyncAfter(delay, [this, message, to] { send(message, to); });
+        return;
+    }
     if (!socket_.isOpen()) return;
     const Bytes bytes = message.encode();
     socket_.sendTo(bytes.data(), bytes.size(), to);
