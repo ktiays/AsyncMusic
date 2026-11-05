@@ -53,7 +53,7 @@ nonisolated final class AudioStreamServer: @unchecked Sendable {
     var onReceiversChange: (@Sendable (Int) -> Void)?
     var onError: (@Sendable (String) -> Void)?
 
-    private let queue = DispatchQueue(label: "me.ktiays.AsyncMusic.audio-stream.server", qos: .userInitiated)
+    private let queue = DispatchQueue(label: "me.ktiays.asyncmusic.audio-stream.server", qos: .userInitiated)
     private var listener: NWListener?
     private var senders: [ObjectIdentifier: Sender] = [:]
     private var stream: OutgoingStream?
@@ -61,7 +61,7 @@ nonisolated final class AudioStreamServer: @unchecked Sendable {
     private var running = false
     private var waiters: [Waiter] = []
 
-    static let logger = Logger(subsystem: "me.ktiays.AsyncMusic", category: "AudioStream")
+    static let logger = Logger(subsystem: "me.ktiays.asyncmusic", category: "AudioStream")
 
     init(codec: AudioStreamCodec = .alac) {
         self.codec = codec

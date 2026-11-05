@@ -5,34 +5,31 @@
 
 #if os(macOS)
 import AppKit
-import AsyncMusicCore
-import UniformTypeIdentifiers
 import SwiftUI
 
 /// The floating window under the menu bar icon: listen for shares and join one, or share this
-/// Mac's audio. Everything the user does happens here.
+/// Mac's audio. AsyncMusic Server does the work; the panel shows its state and sends it what the
+/// user does.
 struct MenuBarPanel: View {
-    let center: ShareCenter
-    var openDiagnostics: () -> Void
+    let client: ServiceClient
+    /// Closes the panel before the Settings window opens.
+    var willOpenSettings: () -> Void
 
-    @State private var showsSettings = false
-    @State private var pendingMode: ShareCenter.Mode?
+    @Environment(\.openWindow) private var openWindow
+    @State private var pendingMode: ShareMode?
 
     var body: some View {
         ZStack {
             VStack(alignment: .leading, spacing: 14) {
-                if showsSettings {
-                    SettingsPanel(center: center, openDiagnostics: openDiagnostics) {
-                        withAnimation(.snappy) { showsSettings = false }
-                    }
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
-                } else {
-                    header
+                header
+                if client.isRunning {
                     modePicker
-                    switch center.mode {
-                    case .listen: ListenSection(center: center)
-                    case .share: ShareSection(center: center)
+                    switch client.state.mode {
+                    case .listen: ListenSection(client: client)
+                    case .share: ShareSection(client: client)
                     }
+                } else {
+                    ServiceUnavailable(client: client)
                 }
             }
             .padding(14)
@@ -40,7 +37,7 @@ struct MenuBarPanel: View {
             .accessibilityHidden(pendingMode != nil)
 
             if let pendingMode {
-                ModeSwitchConfirmation(center: center, mode: pendingMode) {
+                ModeSwitchConfirmation(client: client, mode: pendingMode) {
                     withAnimation(.snappy) { self.pendingMode = nil }
                 }
                 .transition(.opacity)
@@ -55,11 +52,12 @@ struct MenuBarPanel: View {
             AppGlyph(size: 32)
             VStack(alignment: .leading, spacing: 1) {
                 Text("AsyncMusic").font(.headline)
-                Text(center.deviceName).font(.subheadline).foregroundStyle(.secondary)
+                Text(client.settings.deviceName).font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
             Button {
-                withAnimation(.snappy) { showsSettings = true }
+                willOpenSettings()
+                openWindow(id: SettingsSectionID.windowID)
             } label: {
                 Image(systemName: "gearshape").font(.body.weight(.medium))
             }
@@ -70,8 +68,8 @@ struct MenuBarPanel: View {
     }
 
     private var modePicker: some View {
-        Picker("Mode", selection: Binding(get: { center.mode }, set: requestMode)) {
-            ForEach(ShareCenter.Mode.allCases) { mode in
+        Picker("Mode", selection: Binding(get: { client.state.mode }, set: requestMode)) {
+            ForEach(ShareMode.allCases) { mode in
                 Text(mode.rawValue).tag(mode)
             }
         }
@@ -81,11 +79,11 @@ struct MenuBarPanel: View {
         .frame(maxWidth: .infinity)
     }
 
-    private func requestMode(_ mode: ShareCenter.Mode) {
-        if center.switchInterrupts(to: mode) {
+    private func requestMode(_ mode: ShareMode) {
+        if client.state.switchInterrupts(to: mode) {
             withAnimation(.snappy) { pendingMode = mode }
         } else {
-            center.setMode(mode)
+            client.setMode(mode)
         }
     }
 }
@@ -93,21 +91,22 @@ struct MenuBarPanel: View {
 // MARK: - Listen
 
 private struct ListenSection: View {
-    let center: ShareCenter
+    let client: ServiceClient
 
     var body: some View {
+        let state = client.state
         VStack(alignment: .leading, spacing: 14) {
-            NetworkProblems(center: center)
-            if let joined = center.joined {
-                JoinedCard(center: center, share: joined)
-            } else if center.nearbyOthers.isEmpty {
+            NetworkProblems(state: state)
+            if let joined = state.joined {
+                JoinedCard(client: client, share: joined)
+            } else if state.nearbyOthers.isEmpty {
                 ListeningPlaceholder()
             }
-            if !center.nearbyOthers.isEmpty {
-                PanelSection(center.joined == nil ? "Sharing Nearby" : "Also Sharing Nearby") {
-                    ForEach(Array(center.nearbyOthers.enumerated()), id: \.element.id) { index, share in
+            if !state.nearbyOthers.isEmpty {
+                PanelSection(state.joined == nil ? "Sharing Nearby" : "Also Sharing Nearby") {
+                    ForEach(Array(state.nearbyOthers.enumerated()), id: \.element.id) { index, share in
                         if index > 0 { Divider().padding(.leading, 56) }
-                        NearbyRow(share: share) { center.join(share) }
+                        NearbyRow(share: share) { client.join(share) }
                     }
                 }
             }
@@ -138,7 +137,7 @@ private struct ListeningPlaceholder: View {
 }
 
 private struct NearbyRow: View {
-    let share: ShareCenter.NearbyShare
+    let share: NearbyShare
     var join: () -> Void
 
     var body: some View {
@@ -159,11 +158,11 @@ private struct NearbyRow: View {
 }
 
 private struct JoinedCard: View {
-    let center: ShareCenter
-    let share: ShareCenter.NearbyShare
+    let client: ServiceClient
+    let share: NearbyShare
 
-    private var session: ClockSyncSession { center.session }
-    private var isPlaying: Bool { session.player.playback.isPlaying() }
+    private var isPlaying: Bool { client.state.isPlaying }
+    private var channel: ServerState.Channel { client.state.channel }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -181,16 +180,16 @@ private struct JoinedCard: View {
                         Text(share.summary).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                     }
                     Spacer(minLength: 0)
-                    Text(session.player.channel.badge)
+                    Text(channel.badge)
                         .font(.caption.weight(.bold).monospaced())
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
                         .background(.fill.tertiary, in: .capsule)
-                        .help(session.player.channel.title)
+                        .help(channel.title)
                 }
                 HStack(spacing: 8) {
                     Image(systemName: "speaker.fill").foregroundStyle(.secondary)
-                    Slider(value: Binding(get: { Double(session.player.volume) }, set: { session.player.volume = Float($0) }), in: 0 ... 1)
+                    Slider(value: Binding(get: { Double(client.volume) }, set: { client.setVolume(Float($0)) }), in: 0 ... 1)
                         .controlSize(.small)
                         .accessibilityLabel("Volume")
                     Image(systemName: "speaker.wave.3.fill").foregroundStyle(.secondary)
@@ -200,13 +199,13 @@ private struct JoinedCard: View {
             .background(.fill.quinary, in: .rect(cornerRadius: 14))
 
             PanelSection {
-                PanelRow("Plays as") { Text(session.player.channel.title).foregroundStyle(.secondary) }
+                PanelRow("Plays as") { Text(channel.title).foregroundStyle(.secondary) }
                 Divider().padding(.leading, 12)
-                PanelRow("Sync") { SyncLabel(state: session.followerState) }
+                PanelRow("Sync") { SyncLabel(status: client.state.syncStatus) }
             }
 
             Button(role: .destructive) {
-                center.leave()
+                client.leave()
             } label: {
                 Text("Leave").frame(maxWidth: .infinity)
             }
@@ -217,15 +216,15 @@ private struct JoinedCard: View {
 }
 
 private struct SyncLabel: View {
-    let state: ClockSyncFollower.State?
+    let status: SyncStatus?
 
     var body: some View {
-        let (text, color): (String, Color) = switch state {
+        let (text, color): (String, Color) = switch status {
         case .syncing: ("In sync", .green)
-        case .reconnecting(ClockSyncFollower.localNetworkDenied): ("No Local Network access", .red)
+        case .localNetworkDenied: ("No Local Network access", .red)
         case .reconnecting: ("Reconnecting…", .orange)
         case let .failed(message): (message, .red)
-        default: ("Connecting…", .orange)
+        case .connecting, nil: ("Connecting…", .orange)
         }
         Label {
             Text(text)
@@ -240,40 +239,40 @@ private struct SyncLabel: View {
 // MARK: - Share
 
 private struct ShareSection: View {
-    let center: ShareCenter
+    let client: ServiceClient
 
     var body: some View {
-        if center.isSharing {
-            SharingLive(center: center)
+        if client.state.isSharing {
+            SharingLive(client: client)
         } else {
-            ShareSetup(center: center)
+            ShareSetup(client: client)
         }
     }
 }
 
 private struct ShareSetup: View {
-    let center: ShareCenter
-    @State private var catalog = AudioApplicationCatalog()
+    let client: ServiceClient
 
     var body: some View {
+        let state = client.state
         VStack(alignment: .leading, spacing: 14) {
-            NetworkProblems(center: center)
+            NetworkProblems(state: state)
             PanelSection("What to Share") {
                 ScrollView {
                     VStack(spacing: 2) {
-                        ForEach(catalog.applications) { application in
-                            SourceRow(isSelected: center.shareSource == .application(application)) {
+                        ForEach(state.applications) { application in
+                            SourceRow(isSelected: state.shareSource == .application(application)) {
                                 AppIcon(url: application.appURL)
                             } title: {
                                 Text(application.name)
                             } subtitle: {
                                 Text(application.isPlaying ? "Playing now" : "Quiet")
                             } action: {
-                                center.shareSource = .application(application)
+                                client.select(.application(application))
                             }
                         }
-                        if catalog.applications.isEmpty {
-                            Text(catalog.error ?? "Open an app that plays audio.")
+                        if state.applications.isEmpty {
+                            Text(state.applicationsError ?? "Open an app that plays audio.")
                                 .font(.callout).foregroundStyle(.secondary)
                                 .padding(10)
                         }
@@ -284,10 +283,10 @@ private struct ShareSetup: View {
                 .frame(maxHeight: 220)
                 .fixedSize(horizontal: false, vertical: true)
                 Divider().padding(.horizontal, 10)
-                SourceRow(isSelected: { if case .file = center.shareSource { true } else { false } }()) {
+                SourceRow(isSelected: state.shareSource?.isFile == true) {
                     Image(systemName: "doc.badge.plus").font(.title3).frame(width: 26, height: 26)
                 } title: {
-                    if case let .file(url) = center.shareSource {
+                    if case let .file(url) = state.shareSource {
                         Text(url.lastPathComponent).lineLimit(1)
                     } else {
                         Text("Choose Audio File…")
@@ -295,20 +294,20 @@ private struct ShareSetup: View {
                 } subtitle: {
                     EmptyView()
                 } action: {
-                    chooseFile()
+                    client.chooseFile()
                 }
                 .padding(4)
             }
 
             Button {
-                center.startSharing()
+                client.startSharing()
             } label: {
                 Label("Start Sharing", systemImage: "dot.radiowaves.left.and.right").frame(maxWidth: .infinity)
             }
             .buttonStyle(.glassProminent)
             .tint(.orange)
             .controlSize(.large)
-            .disabled(center.shareSource == nil)
+            .disabled(state.shareSource == nil)
 
             Text("Everyone on this network will get an alert.")
                 .font(.footnote)
@@ -316,34 +315,25 @@ private struct ShareSetup: View {
                 .frame(maxWidth: .infinity)
         }
         .task {
+            // The server lists the apps, from its side of the sandbox.
             while !Task.isCancelled {
-                catalog.refresh()
+                client.refreshApplications()
                 do { try await Task.sleep(for: .seconds(2)) } catch { return }
             }
-        }
-    }
-
-    private func chooseFile() {
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.audio]
-        panel.allowsMultipleSelection = false
-        NSApp.activate()
-        if panel.runModal() == .OK, let url = panel.url {
-            center.shareSource = .file(url)
         }
     }
 }
 
 private struct SharingLive: View {
-    let center: ShareCenter
-    private var session: ClockSyncSession { center.session }
+    let client: ServiceClient
 
     var body: some View {
+        let state = client.state
         VStack(alignment: .leading, spacing: 14) {
-            NetworkProblems(center: center)
+            NetworkProblems(state: state)
             HStack(spacing: 12) {
                 Group {
-                    switch center.shareSource {
+                    switch state.shareSource {
                     case let .application(application): AppIcon(url: application.appURL, size: 44)
                     default: Image(systemName: "music.note").font(.title2).frame(width: 44, height: 44).background(.fill.tertiary, in: .rect(cornerRadius: 10))
                     }
@@ -356,8 +346,8 @@ private struct SharingLive: View {
                     }
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.orange)
-                    Text(center.shareSource?.name ?? "Audio").font(.headline).lineLimit(1)
-                    Text(statusText).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                    Text(state.shareSource?.name ?? "Audio").font(.headline).lineLimit(1)
+                    Text(state.shareProblem ?? "Seen as “\(state.deviceName)”").font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                 }
                 Spacer(minLength: 0)
             }
@@ -365,8 +355,8 @@ private struct SharingLive: View {
             .background(.fill.quinary, in: .rect(cornerRadius: 14))
 
             PanelSection("Sound") {
-                Picker("Sound", selection: Binding(get: { session.speakerLayout }, set: { session.setSpeakerLayout($0) })) {
-                    ForEach(SpeakerLayout.allCases) { layout in
+                Picker("Sound", selection: Binding(get: { state.layout }, set: { client.setLayout($0) })) {
+                    ForEach(ServerState.Layout.allCases) { layout in
                         Text(layout.title).tag(layout)
                     }
                 }
@@ -376,19 +366,19 @@ private struct SharingLive: View {
                 .padding(8)
             }
 
-            PanelSection(center.listeners.isEmpty ? "Listening" : "Listening · \(center.listeners.count)") {
-                if center.listeners.isEmpty {
+            PanelSection(state.listeners.isEmpty ? "Listening" : "Listening · \(state.listeners.count)") {
+                if state.listeners.isEmpty {
                     Text("No one has joined yet.")
                         .font(.callout).foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(12)
                 }
-                ForEach(Array(center.listeners.enumerated()), id: \.element.id) { index, member in
+                ForEach(Array(state.listeners.enumerated()), id: \.element.id) { index, member in
                     if index > 0 { Divider().padding(.leading, 40) }
                     PanelRow {
                         Label(member.name, systemImage: "hifispeaker")
                     } trailing: {
-                        if let channel = session.activeChannels[member.id], channel != .full {
+                        if let channel = member.channel {
                             Text(channel.title).foregroundStyle(.secondary)
                         }
                     }
@@ -396,7 +386,7 @@ private struct SharingLive: View {
             }
 
             Button(role: .destructive) {
-                center.stopSharing()
+                client.stopSharing()
             } label: {
                 Text("Stop Sharing").frame(maxWidth: .infinity)
             }
@@ -404,20 +394,13 @@ private struct SharingLive: View {
             .controlSize(.large)
         }
     }
-
-    private var statusText: String {
-        if let error = session.applicationAudio.error { return error }
-        if session.isLoadingTrack { return "Loading…" }
-        if session.applicationAudio.isWaitingForAudio { return "Waiting for audio…" }
-        return "Seen as “\(center.deviceName)”"
-    }
 }
 
 // MARK: - Mode switch
 
 private struct ModeSwitchConfirmation: View {
-    let center: ShareCenter
-    let mode: ShareCenter.Mode
+    let client: ServiceClient
+    let mode: ShareMode
     var dismiss: () -> Void
 
     var body: some View {
@@ -435,7 +418,7 @@ private struct ModeSwitchConfirmation: View {
                         .keyboardShortcut(.cancelAction)
                         .frame(maxWidth: .infinity)
                     Button(switchTitle) {
-                        center.setMode(mode)
+                        client.setMode(mode)
                         dismiss()
                     }
                     .keyboardShortcut(.defaultAction)
@@ -459,9 +442,9 @@ private struct ModeSwitchConfirmation: View {
 
     private var message: String {
         if mode == .share {
-            return "You’ll stop listening to \(center.joined?.name ?? "the share"). A Mac either listens or shares, not both at once."
+            return "You’ll stop listening to \(client.state.joined?.name ?? "the share"). A Mac either listens or shares, not both at once."
         }
-        let count = center.listeners.count
+        let count = client.state.listeners.count
         return count == 0 ? "Listening ends this share." : "\(count) \(count == 1 ? "device" : "devices") listening to you will be disconnected."
     }
 
@@ -469,15 +452,70 @@ private struct ModeSwitchConfirmation: View {
     private var switchTitle: String { mode == .share ? "Leave and Share" : "Stop and Listen" }
 }
 
+// MARK: - Service
+
+/// In place of everything else while AsyncMusic Server isn't running.
+private struct ServiceUnavailable: View {
+    let client: ServiceClient
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Group {
+                if client.status == .starting {
+                    ProgressView().controlSize(.large)
+                } else {
+                    Image(systemName: "pause.circle").font(.system(size: 40)).foregroundStyle(.secondary)
+                }
+            }
+            .frame(height: 48)
+            Text(title).font(.headline)
+            Text(message)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+            switch client.status {
+            case .off, .failed:
+                Button("Turn On") { client.setEnabled(true) }
+                    .buttonStyle(.glassProminent)
+                    .controlSize(.large)
+                    .padding(.top, 4)
+            case .starting, .running:
+                EmptyView()
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 18)
+        .padding(.horizontal, 16)
+        .background(.fill.quinary, in: .rect(cornerRadius: 14))
+    }
+
+    private var title: String {
+        switch client.status {
+        case .starting, .running: "Starting AsyncMusic Server…"
+        case .off: "AsyncMusic Server Is Off"
+        case .failed: "AsyncMusic Server Couldn’t Start"
+        }
+    }
+
+    private var message: String {
+        switch client.status {
+        case .starting, .running: "It listens for shares and plays them, even after you quit this app."
+        case .off: "This Mac doesn’t listen for shares or share its audio until you turn it on."
+        case let .failed(message): message
+        }
+    }
+}
+
 // MARK: - Problems
 
 private struct NetworkProblems: View {
-    let center: ShareCenter
+    let state: ServerState
 
     var body: some View {
-        if center.session.isLocalNetworkDenied {
-            Notice(systemImage: "network.slash", text: "Local Network access is off for AsyncMusic. Turn it on in System Settings › Privacy & Security › Local Network.")
-        } else if let error = center.discoveryError {
+        if state.isLocalNetworkDenied {
+            Notice(systemImage: "network.slash", text: "Local Network access is off for AsyncMusic Server. Turn it on in System Settings › Privacy & Security › Local Network.")
+        } else if let error = state.discoveryError {
             Notice(systemImage: "exclamationmark.triangle", text: error)
         }
     }
@@ -577,56 +615,6 @@ private struct SourceRow<Icon: View, Title: View, Subtitle: View>: View {
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
-    }
-}
-
-struct AppIcon: View {
-    let url: URL?
-    var size: CGFloat = 26
-
-    var body: some View {
-        if let url {
-            Image(nsImage: NSWorkspace.shared.icon(forFile: url.path)).resizable().frame(width: size, height: size)
-        } else {
-            Image(systemName: "waveform").frame(width: size, height: size)
-        }
-    }
-}
-
-/// The app's mark on a dark tile.
-struct AppGlyph: View {
-    var size: CGFloat
-
-    var body: some View {
-        ShareIcon(emphasis: .playing)
-            .foregroundStyle(.white)
-            .padding(size * 0.14)
-            .frame(width: size, height: size)
-            .background(Color(white: 0.12), in: .rect(cornerRadius: size * 0.25))
-            .accessibilityHidden(true)
-    }
-}
-
-/// What kind of source a share plays, on a tinted tile.
-struct DeviceTile: View {
-    let kind: ShareSourceKind
-    var size: CGFloat
-
-    var body: some View {
-        Image(systemName: symbol)
-            .font(.system(size: size * 0.45, weight: .medium))
-            .foregroundStyle(.orange)
-            .frame(width: size, height: size)
-            .background(.orange.opacity(0.15), in: .circle)
-            .accessibilityHidden(true)
-    }
-
-    private var symbol: String {
-        switch kind {
-        case .file: "music.note"
-        case .system: "desktopcomputer"
-        default: "dot.radiowaves.left.and.right"
-        }
     }
 }
 #endif

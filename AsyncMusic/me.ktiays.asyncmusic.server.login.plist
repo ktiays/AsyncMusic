@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- The "Start at Login" item, registered by the app with SMAppService.agent. At login it runs
+	     the server with --start-service, which loads the server's own launchd job (unless the user
+	     turned the service off) and exits; the server itself is never this job. -->
+	<key>Label</key>
+	<string>me.ktiays.asyncmusic.server.login</string>
+	<key>BundleProgram</key>
+	<string>Contents/Helpers/AsyncMusic Server.app/Contents/MacOS/AsyncMusic Server</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>AsyncMusic Server</string>
+		<string>--start-service</string>
+	</array>
+	<key>AssociatedBundleIdentifiers</key>
+	<array>
+		<string>me.ktiays.asyncmusic</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>LimitLoadToSessionType</key>
+	<string>Aqua</string>
+</dict>
+</plist>

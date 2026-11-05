@@ -8,23 +8,13 @@ import Foundation
 import Observation
 import ServiceManagement
 
-/// The menu bar app's preferences, kept in user defaults.
+/// The menu bar app's preferences, kept in user defaults. The ones AsyncMusic Server acts on
+/// are sent to it as `service` whenever they change.
 @Observable
 final class AppSettings {
     static let shared = AppSettings()
 
-    enum AlertBehavior: String, CaseIterable, Identifiable {
-        case showAlert
-        case onlyList
-
-        var id: Self { self }
-        var title: String {
-            switch self {
-            case .showAlert: "Show Alert"
-            case .onlyList: "Only List"
-            }
-        }
-    }
+    typealias AlertBehavior = ServiceSettings.AlertBehavior
 
     static let deviceNameKey = "AppSettings.deviceName"
     private static let alertBehaviorKey = "AppSettings.alertBehavior"
@@ -46,12 +36,14 @@ final class AppSettings {
     private(set) var opensAtLogin = SMAppService.mainApp.status == .enabled
     private(set) var loginItemError: String?
 
-    var deviceName: String {
-        let trimmed = customDeviceName.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? Self.systemDeviceName : trimmed
+    /// What the server needs to know.
+    var service: ServiceSettings {
+        ServiceSettings(customDeviceName: customDeviceName, alertBehavior: alertBehavior, playsAlertSound: playsAlertSound)
     }
 
-    static var systemDeviceName: String { Host.current().localizedName ?? "Mac" }
+    var deviceName: String { service.deviceName }
+
+    static var systemDeviceName: String { ServiceSettings.systemDeviceName }
 
     private init() {
         let defaults = UserDefaults.standard

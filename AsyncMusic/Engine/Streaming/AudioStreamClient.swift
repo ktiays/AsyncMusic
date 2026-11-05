@@ -31,7 +31,7 @@ nonisolated final class AudioStreamClient: @unchecked Sendable {
     var onLog: (@Sendable (String) -> Void)?
 
     private let endpoint: NWEndpoint
-    private let queue = DispatchQueue(label: "me.ktiays.AsyncMusic.audio-stream.client", qos: .userInitiated)
+    private let queue = DispatchQueue(label: "me.ktiays.asyncmusic.audio-stream.client", qos: .userInitiated)
     private var connection: NWConnection?
     private var running = false
     private var streamID: UInt64?

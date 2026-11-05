@@ -3,18 +3,18 @@
 //  Copyright (c) 2026 ktiays. All rights reserved.
 //
 
-#if os(macOS)
-import AsyncMusicCore
 import SwiftUI
 
-/// The alert that grows out of the menu bar icon when a share starts. One share gets one card;
+/// The alert that grows out of the menu bar icon when a share starts, or appears in the middle
+/// of the screen when the menu bar app isn't running. One share gets one card;
 /// several stack up behind the newest, page with the arrows or a swipe, and fan out into
 /// separate cards while the pointer rests on them. Closing it (click elsewhere, Esc, or waiting)
 /// is how a share is ignored; it stays listed in the panel.
 struct ShareAlertsView: View {
     let center: ShareCenter
-    /// Where the icon is, from the view's leading edge: the arrow points there.
-    let anchorX: CGFloat
+    /// Where the icon is, from the view's leading edge: the arrow points there. Nil when there's
+    /// no icon to point at.
+    let anchorX: CGFloat?
     /// When the alert closes by itself.
     let deadline: Date
     let duration: TimeInterval
@@ -23,15 +23,17 @@ struct ShareAlertsView: View {
     @State private var isFanned = false
     @State private var isShown = false
 
-    private var alerts: [ShareCenter.NearbyShare] { center.alerts }
+    private var alerts: [NearbyShare] { center.alerts }
     private static let width: CGFloat = 340
 
     var body: some View {
         VStack(spacing: 0) {
-            Color.clear
-                .frame(width: 22, height: 9)
-                .glassEffect(.regular, in: Arrow())
-                .offset(x: anchorX - Self.width / 2, y: 1)
+            if let anchorX {
+                Color.clear
+                    .frame(width: 22, height: 9)
+                    .glassEffect(.regular, in: Arrow())
+                    .offset(x: anchorX - Self.width / 2, y: 1)
+            }
             Group {
                 if alerts.count > 1, isFanned {
                     fanned
@@ -41,7 +43,7 @@ struct ShareAlertsView: View {
             }
         }
         .frame(width: Self.width)
-        .scaleEffect(isShown ? 1 : 0.4, anchor: UnitPoint(x: anchorX / Self.width, y: 0))
+        .scaleEffect(isShown ? 1 : 0.4, anchor: anchorX.map { UnitPoint(x: $0 / Self.width, y: 0) } ?? .center)
         .opacity(isShown ? 1 : 0)
         .onAppear {
             withAnimation(.spring(response: 0.38, dampingFraction: 0.72)) { isShown = true }
@@ -144,7 +146,7 @@ struct ShareAlertsView: View {
 }
 
 private struct AlertCard: View {
-    let share: ShareCenter.NearbyShare
+    let share: NearbyShare
     let header: AnyView?
     let deadline: Date
     let duration: TimeInterval
@@ -187,7 +189,7 @@ private struct AlertCard: View {
 }
 
 private struct CompactAlertRow: View {
-    let share: ShareCenter.NearbyShare
+    let share: NearbyShare
     var join: () -> Void
 
     var body: some View {
@@ -239,4 +241,3 @@ private struct Arrow: Shape {
 extension Array {
     subscript(safe index: Int) -> Element? { indices.contains(index) ? self[index] : nil }
 }
-#endif

@@ -34,14 +34,14 @@ nonisolated final class FileStreamFeeder: @unchecked Sendable {
     private let startFrame: Int64
     /// The media time (nanoseconds) being heard now, or nil while unknown.
     private let currentMediaTime: @Sendable () -> Int64?
-    private let queue = DispatchQueue(label: "me.ktiays.AsyncMusic.file-stream", qos: .userInitiated)
+    private let queue = DispatchQueue(label: "me.ktiays.asyncmusic.file-stream", qos: .userInitiated)
     private var audioFile: AVAudioFile?
     private var chunk: AVAudioPCMBuffer?
     private var timer: DispatchSourceTimer?
     private var finished = false
     private var stalled = false
 
-    private static let logger = Logger(subsystem: "me.ktiays.AsyncMusic", category: "Playback")
+    private static let logger = Logger(subsystem: "me.ktiays.asyncmusic", category: "Playback")
 
     /// - Parameters:
     ///   - startFrame: First frame to decode; the buffer must have been created at this frame.

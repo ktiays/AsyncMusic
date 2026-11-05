@@ -104,7 +104,7 @@ final class SyncedPlayer {
 
     private static let manualOffsetKey = "SyncedPlayer.manualOffset"
     private static let volumeKey = "SyncedPlayer.volume"
-    private static let logger = Logger(subsystem: "me.ktiays.AsyncMusic", category: "Playback")
+    private static let logger = Logger(subsystem: "me.ktiays.asyncmusic", category: "Playback")
 
     func start() {
         guard !wantsRunning else { return }

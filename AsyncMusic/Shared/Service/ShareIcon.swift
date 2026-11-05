@@ -7,8 +7,9 @@
 import AppKit
 import SwiftUI
 
-/// The app's mark: a music note between two pairs of arcs, on a 24-unit grid. The arcs and the
-/// note's stem share one stroke width, so the whole mark has a single weight.
+/// The app's mark: a music note between two pairs of arcs, on a grid 24 units tall and
+/// `gridWidth` wide, centred on x = 12. The arcs and the note's stem share one stroke width, so the
+/// whole mark has a single weight.
 struct ShareIcon: View {
     enum Emphasis {
         /// Listening: the outer arcs faint.
@@ -23,9 +24,12 @@ struct ShareIcon: View {
     var lineWidth: CGFloat = 2
     var showsBadge = false
 
+    /// The arcs reach past the 24-unit square so they can sit well clear of the note.
+    static let gridWidth: CGFloat = 26.6
+
     var body: some View {
         Canvas { context, size in
-            let scale = min(size.width, size.height) / 24
+            let scale = min(size.width / Self.gridWidth, size.height / 24)
             context.translateBy(x: (size.width - 24 * scale) / 2, y: (size.height - 24 * scale) / 2)
             context.scaleBy(x: scale, y: scale)
             let width = emphasis == .sharing ? lineWidth * 1.2 : lineWidth
@@ -36,7 +40,7 @@ struct ShareIcon: View {
             outer.opacity = emphasis == .listening ? 0.45 : 1
             if showsBadge {
                 // Leave a gap around the badge.
-                outer.clip(to: Path(ellipseIn: CGRect(x: 16.2, y: 1.2, width: 7.6, height: 7.6)), options: .inverse)
+                outer.clip(to: Path(ellipseIn: CGRect(x: 17.7, y: 1.2, width: 7.6, height: 7.6)), options: .inverse)
             }
             outer.stroke(Self.outerArcs, with: shading, style: style)
 
@@ -46,7 +50,7 @@ struct ShareIcon: View {
             context.fill(Self.head(lineWidth: width), with: shading)
 
             if showsBadge {
-                context.fill(Path(ellipseIn: CGRect(x: 17.6, y: 2.6, width: 4.8, height: 4.8)), with: shading)
+                context.fill(Path(ellipseIn: CGRect(x: 19.1, y: 2.6, width: 4.8, height: 4.8)), with: shading)
             }
         }
     }
@@ -64,16 +68,17 @@ struct ShareIcon: View {
     static let innerArcs: Path = {
         var path = Path()
         // Chords 7 units tall, radius 5.5: the centres sit 4.243 units inside.
-        arc(&path, start: CGPoint(x: 7, y: 8.5), end: CGPoint(x: 7, y: 15.5), center: CGPoint(x: 11.243, y: 12), side: -1)
-        arc(&path, start: CGPoint(x: 17, y: 8.5), end: CGPoint(x: 17, y: 15.5), center: CGPoint(x: 12.757, y: 12), side: 1)
+        arc(&path, start: CGPoint(x: 6, y: 8.5), end: CGPoint(x: 6, y: 15.5), center: CGPoint(x: 10.243, y: 12), side: -1)
+        arc(&path, start: CGPoint(x: 18, y: 8.5), end: CGPoint(x: 18, y: 15.5), center: CGPoint(x: 13.757, y: 12), side: 1)
         return path
     }()
 
     static let outerArcs: Path = {
         var path = Path()
-        // Chords 11 units tall, radius 8.5.
-        arc(&path, start: CGPoint(x: 3.5, y: 6.5), end: CGPoint(x: 3.5, y: 17.5), center: CGPoint(x: 9.981, y: 12), side: -1)
-        arc(&path, start: CGPoint(x: 20.5, y: 6.5), end: CGPoint(x: 20.5, y: 17.5), center: CGPoint(x: 14.019, y: 12), side: 1)
+        // Chords 11 units tall, radius 8.5: the centres sit 6.481 units inside. The gap to the
+        // inner arcs is wider than the inner arcs' gap to the note, so the spacing opens outward.
+        arc(&path, start: CGPoint(x: 2, y: 6.5), end: CGPoint(x: 2, y: 17.5), center: CGPoint(x: 8.481, y: 12), side: -1)
+        arc(&path, start: CGPoint(x: 22, y: 6.5), end: CGPoint(x: 22, y: 17.5), center: CGPoint(x: 15.519, y: 12), side: 1)
         return path
     }()
 
@@ -119,7 +124,7 @@ enum MenuBarIcon {
         case .playing: .playing
         case .sharing: .sharing
         }
-        let renderer = ImageRenderer(content: ShareIcon(emphasis: emphasis, showsBadge: badge).foregroundStyle(.black).frame(width: 22, height: 22))
+        let renderer = ImageRenderer(content: ShareIcon(emphasis: emphasis, showsBadge: badge).foregroundStyle(.black).frame(width: 22 * ShareIcon.gridWidth / 24, height: 22))
         renderer.scale = 3
         let image = renderer.nsImage ?? NSImage()
         image.isTemplate = true

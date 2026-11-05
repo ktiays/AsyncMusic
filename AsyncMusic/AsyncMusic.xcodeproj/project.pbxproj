@@ -7,28 +7,133 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		A17000013000000000000001 /* MacAudioCapture in Frameworks */ = {isa = PBXBuildFile; productRef = A17000033000000000000001 /* MacAudioCapture */; };
-		ED8185A030812036006FD72C /* AsyncMusicCore in Frameworks */ = {isa = PBXBuildFile; productRef = ED8185A230812036006FD72C /* AsyncMusicCore */; };
+		A17000043000000000000001 /* SettingsKit in Frameworks */ = {isa = PBXBuildFile; platformFilters = (macos, ); productRef = A17000063000000000000001 /* SettingsKit */; };
+		B1000020300000000000000A /* MacAudioCapture in Frameworks */ = {isa = PBXBuildFile; productRef = B1000022300000000000000A /* MacAudioCapture */; };
+		B1000021300000000000000A /* AsyncMusicCore in Frameworks */ = {isa = PBXBuildFile; productRef = B1000023300000000000000A /* AsyncMusicCore */; };
+		B1000031300000000000000A /* AsyncMusic Server.app in Embed Server */ = {isa = PBXBuildFile; fileRef = B1000003300000000000000A /* AsyncMusic Server.app */; platformFilters = (macos, ); settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		B1000033300000000000000A /* me.ktiays.asyncmusic.server.login.plist in Embed Launch Agent */ = {isa = PBXBuildFile; fileRef = B1000004300000000000000A /* me.ktiays.asyncmusic.server.login.plist */; platformFilters = (macos, ); };
+		ED8185A030812036006FD72C /* AsyncMusicCore in Frameworks */ = {isa = PBXBuildFile; platformFilters = (ios, xros, ); productRef = ED8185A230812036006FD72C /* AsyncMusicCore */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		B1000041300000000000000A /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = ED81851430812036006FD72C /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = B1000010300000000000000A;
+			remoteInfo = "AsyncMusic Server";
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		B1000030300000000000000A /* Embed Server */ = {
+			isa = PBXCopyFilesBuildPhase;
+			dstPath = Contents/Helpers;
+			dstSubfolder = Wrapper;
+			files = (
+				B1000031300000000000000A /* AsyncMusic Server.app in Embed Server */,
+			);
+			name = "Embed Server";
+		};
+		B1000032300000000000000A /* Embed Launch Agent */ = {
+			isa = PBXCopyFilesBuildPhase;
+			dstPath = Contents/Library/LaunchAgents;
+			dstSubfolder = Wrapper;
+			files = (
+				B1000033300000000000000A /* me.ktiays.asyncmusic.server.login.plist in Embed Launch Agent */,
+			);
+			name = "Embed Launch Agent";
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
+		B1000003300000000000000A /* AsyncMusic Server.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "AsyncMusic Server.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		B1000004300000000000000A /* me.ktiays.asyncmusic.server.login.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = me.ktiays.asyncmusic.server.login.plist; sourceTree = "<group>"; };
 		ED81851C30812036006FD72C /* AsyncMusic.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AsyncMusic.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		B1000006300000000000000A /* Exceptions for "Engine" folder in "AsyncMusic" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			platformFiltersByRelativePath = {
+				ClockSync/ClockSyncFollower.swift = (ios, xros, );
+				ClockSync/ClockSyncLeader.swift = (ios, xros, );
+				ClockSync/ClockSyncMessage.swift = (ios, xros, );
+				ClockSync/ClockSyncSession.swift = (ios, xros, );
+				ClockSync/HostClock.swift = (ios, xros, );
+				Core/CoreBridge.swift = (ios, xros, );
+				Diagnostics/DiagnosticsView.swift = (ios, xros, );
+				Group/DeviceIdentity.swift = (ios, xros, );
+				"Group/SpeakerLayout+UI.swift" = (ios, xros, );
+				Playback/ApplicationAudio/ApplicationAudioSource.swift = (ios, xros, );
+				Playback/ApplicationAudio/AudioApplicationCatalog.swift = (ios, xros, );
+				Playback/ApplicationAudio/ProcessTapStreamFeeder.swift = (ios, xros, );
+				Playback/FileStreamFeeder.swift = (ios, xros, );
+				Playback/MediaFile.swift = (ios, xros, );
+				Playback/SyncedPlayer.swift = (ios, xros, );
+				Streaming/ALACCodec.swift = (ios, xros, );
+				Streaming/AudioStreamClient.swift = (ios, xros, );
+				Streaming/AudioStreamMessage.swift = (ios, xros, );
+				Streaming/AudioStreamServer.swift = (ios, xros, );
+			};
+			target = ED81851B30812036006FD72C /* AsyncMusic */;
+		};
+		B1000007300000000000000A /* Exceptions for "AsyncMusic" folder in "AsyncMusic" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			platformFiltersByRelativePath = {
+				ContentView.swift = (ios, xros, );
+				UI/AudioApplicationPicker.swift = (ios, xros, );
+				UI/Components.swift = (ios, xros, );
+				UI/HostView.swift = (ios, xros, );
+				UI/JoinView.swift = (ios, xros, );
+				UI/WelcomeView.swift = (ios, xros, );
+			};
+			target = ED81851B30812036006FD72C /* AsyncMusic */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		B1000001300000000000000A /* Shared */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Shared;
+			sourceTree = "<group>";
+		};
+		B1000002300000000000000A /* Server */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Server;
+			sourceTree = "<group>";
+		};
 		ED81851E30812036006FD72C /* AsyncMusic */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				B1000007300000000000000A /* Exceptions for "AsyncMusic" folder in "AsyncMusic" target */,
+			);
 			path = AsyncMusic;
+			sourceTree = "<group>";
+		};
+		B1000005300000000000000A /* Engine */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				B1000006300000000000000A /* Exceptions for "Engine" folder in "AsyncMusic" target */,
+			);
+			path = Engine;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		B1000012300000000000000A /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			files = (
+				B1000020300000000000000A /* MacAudioCapture in Frameworks */,
+				B1000021300000000000000A /* AsyncMusicCore in Frameworks */,
+			);
+		};
 		ED81851930812036006FD72C /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			files = (
-				A17000013000000000000001 /* MacAudioCapture in Frameworks */,
 				ED8185A030812036006FD72C /* AsyncMusicCore in Frameworks */,
+				A17000043000000000000001 /* SettingsKit in Frameworks */,
 			);
 		};
 /* End PBXFrameworksBuildPhase section */
@@ -38,6 +143,10 @@
 			isa = PBXGroup;
 			children = (
 				ED81851E30812036006FD72C /* AsyncMusic */,
+				B1000001300000000000000A /* Shared */,
+				B1000005300000000000000A /* Engine */,
+				B1000002300000000000000A /* Server */,
+				B1000004300000000000000A /* me.ktiays.asyncmusic.server.login.plist */,
 				ED81851D30812036006FD72C /* Products */,
 			);
 			sourceTree = "<group>";
@@ -46,6 +155,7 @@
 			isa = PBXGroup;
 			children = (
 				ED81851C30812036006FD72C /* AsyncMusic.app */,
+				B1000003300000000000000A /* AsyncMusic Server.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -53,6 +163,30 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		B1000010300000000000000A /* AsyncMusic Server */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B1000014300000000000000A /* Build configuration list for PBXNativeTarget "AsyncMusic Server" */;
+			buildPhases = (
+				B1000011300000000000000A /* Sources */,
+				B1000012300000000000000A /* Frameworks */,
+				B1000013300000000000000A /* Resources */,
+			);
+			buildRules = (
+			);
+			fileSystemSynchronizedGroups = (
+				B1000001300000000000000A /* Shared */,
+				B1000005300000000000000A /* Engine */,
+				B1000002300000000000000A /* Server */,
+			);
+			name = "AsyncMusic Server";
+			packageProductDependencies = (
+				B1000022300000000000000A /* MacAudioCapture */,
+				B1000023300000000000000A /* AsyncMusicCore */,
+			);
+			productName = "AsyncMusic Server";
+			productReference = B1000003300000000000000A /* AsyncMusic Server.app */;
+			productType = "com.apple.product-type.application";
+		};
 		ED81851B30812036006FD72C /* AsyncMusic */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = ED81852730812036006FD72C /* Build configuration list for PBXNativeTarget "AsyncMusic" */;
@@ -60,16 +194,23 @@
 				ED81851830812036006FD72C /* Sources */,
 				ED81851930812036006FD72C /* Frameworks */,
 				ED81851A30812036006FD72C /* Resources */,
+				B1000030300000000000000A /* Embed Server */,
+				B1000032300000000000000A /* Embed Launch Agent */,
 			);
 			buildRules = (
 			);
+			dependencies = (
+				B1000040300000000000000A /* PBXTargetDependency */,
+			);
 			fileSystemSynchronizedGroups = (
+				B1000001300000000000000A /* Shared */,
+				B1000005300000000000000A /* Engine */,
 				ED81851E30812036006FD72C /* AsyncMusic */,
 			);
 			name = AsyncMusic;
 			packageProductDependencies = (
-				A17000033000000000000001 /* MacAudioCapture */,
 				ED8185A230812036006FD72C /* AsyncMusicCore */,
+				A17000063000000000000001 /* SettingsKit */,
 			);
 			productName = AsyncMusic;
 			productReference = ED81851C30812036006FD72C /* AsyncMusic.app */;
@@ -85,6 +226,9 @@
 				LastSwiftUpdateCheck = 2710;
 				LastUpgradeCheck = 2710;
 				TargetAttributes = {
+					B1000010300000000000000A = {
+						CreatedOnToolsVersion = 27.1;
+					};
 					ED81851B30812036006FD72C = {
 						CreatedOnToolsVersion = 27.1;
 					};
@@ -102,6 +246,7 @@
 			packageReferences = (
 				A17000023000000000000001 /* XCLocalSwiftPackageReference "../MacAudioCapture" */,
 				ED8185A130812036006FD72C /* XCLocalSwiftPackageReference "../Core" */,
+				A17000053000000000000001 /* XCRemoteSwiftPackageReference "SettingsKit" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = ED81851D30812036006FD72C /* Products */;
@@ -109,11 +254,17 @@
 			projectRoot = "";
 			targets = (
 				ED81851B30812036006FD72C /* AsyncMusic */,
+				B1000010300000000000000A /* AsyncMusic Server */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		B1000013300000000000000A /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			files = (
+			);
+		};
 		ED81851A30812036006FD72C /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			files = (
@@ -122,6 +273,11 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		B1000011300000000000000A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
+			);
+		};
 		ED81851830812036006FD72C /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			files = (
@@ -129,7 +285,88 @@
 		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		B1000040300000000000000A /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			platformFilters = (
+				macos,
+			);
+			target = B1000010300000000000000A /* AsyncMusic Server */;
+			targetProxy = B1000041300000000000000A /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
+		B1000015300000000000000A /* Debug configuration for PBXNativeTarget "AsyncMusic Server" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = V8K4KDZ2JN;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Server-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "AsyncMusic Server";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.music";
+				INFOPLIST_KEY_LSUIElement = YES;
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "AsyncMusic syncs its playback clock with other devices on your local network.";
+				LD_RUNPATH_SEARCH_PATHS = "@executable_path/../Frameworks";
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = me.ktiays.asyncmusic.server;
+				PRODUCT_NAME = "AsyncMusic Server";
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_INTEROP_MODE = objcxx;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		B1000016300000000000000A /* Release configuration for PBXNativeTarget "AsyncMusic Server" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = V8K4KDZ2JN;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Server-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "AsyncMusic Server";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.music";
+				INFOPLIST_KEY_LSUIElement = YES;
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "AsyncMusic syncs its playback clock with other devices on your local network.";
+				LD_RUNPATH_SEARCH_PATHS = "@executable_path/../Frameworks";
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = me.ktiays.asyncmusic.server;
+				PRODUCT_NAME = "AsyncMusic Server";
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_INTEROP_MODE = objcxx;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
 		ED81852530812036006FD72C /* Debug configuration for PBXProject "AsyncMusic" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -254,18 +491,13 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = V8K4KDZ2JN;
-				ENABLE_APP_SANDBOX = YES;
+				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
-				ENABLE_INCOMING_NETWORK_CONNECTIONS = YES;
-				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_PREVIEWS = YES;
-				"ENABLE_RESOURCE_ACCESS_AUDIO_INPUT[sdk=macosx*]" = YES;
-				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Info.plist;
 				"INFOPLIST_FILE[sdk=macosx*]" = "Info-macOS.plist";
 				INFOPLIST_KEY_LSUIElement = YES;
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "AsyncMusic syncs its playback clock with other devices on your local network.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -281,7 +513,7 @@
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = me.ktiays.AsyncMusic;
+				PRODUCT_BUNDLE_IDENTIFIER = me.ktiays.asyncmusic;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				SDKROOT = auto;
@@ -306,18 +538,13 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = V8K4KDZ2JN;
-				ENABLE_APP_SANDBOX = YES;
+				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
-				ENABLE_INCOMING_NETWORK_CONNECTIONS = YES;
-				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_PREVIEWS = YES;
-				"ENABLE_RESOURCE_ACCESS_AUDIO_INPUT[sdk=macosx*]" = YES;
-				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Info.plist;
 				"INFOPLIST_FILE[sdk=macosx*]" = "Info-macOS.plist";
 				INFOPLIST_KEY_LSUIElement = YES;
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "AsyncMusic syncs its playback clock with other devices on your local network.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -333,7 +560,7 @@
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = me.ktiays.AsyncMusic;
+				PRODUCT_BUNDLE_IDENTIFIER = me.ktiays.asyncmusic;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				SDKROOT = auto;
@@ -353,6 +580,14 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		B1000014300000000000000A /* Build configuration list for PBXNativeTarget "AsyncMusic Server" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B1000015300000000000000A /* Debug configuration for PBXNativeTarget "AsyncMusic Server" */,
+				B1000016300000000000000A /* Release configuration for PBXNativeTarget "AsyncMusic Server" */,
+			);
+			defaultConfigurationName = Release;
+		};
 		ED81851730812036006FD72C /* Build configuration list for PBXProject "AsyncMusic" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -382,10 +617,30 @@
 		};
 /* End XCLocalSwiftPackageReference section */
 
+/* Begin XCRemoteSwiftPackageReference section */
+		A17000053000000000000001 /* XCRemoteSwiftPackageReference "SettingsKit" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/ktiays/SettingsKit";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.0.2;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
 /* Begin XCSwiftPackageProductDependency section */
-		A17000033000000000000001 /* MacAudioCapture */ = {
+		A17000063000000000000001 /* SettingsKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A17000053000000000000001 /* XCRemoteSwiftPackageReference "SettingsKit" */;
+			productName = SettingsKit;
+		};
+		B1000022300000000000000A /* MacAudioCapture */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = MacAudioCapture;
+		};
+		B1000023300000000000000A /* AsyncMusicCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = AsyncMusicCore;
 		};
 		ED8185A230812036006FD72C /* AsyncMusicCore */ = {
 			isa = XCSwiftPackageProductDependency;

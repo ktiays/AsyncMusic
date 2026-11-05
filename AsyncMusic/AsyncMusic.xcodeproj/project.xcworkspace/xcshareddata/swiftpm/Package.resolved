@@ -1,0 +1,15 @@
+{
+  "originHash" : "4c8483f8ef4abe0060b2d091efa1678f75583338b0a1a08b67773cceb2ae5c25",
+  "pins" : [
+    {
+      "identity" : "settingskit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/ktiays/SettingsKit",
+      "state" : {
+        "revision" : "1e913d88ccd5da15e3fc6b7d80a7952e9d77d54f",
+        "version" : "1.0.2"
+      }
+    }
+  ],
+  "version" : 3
+}

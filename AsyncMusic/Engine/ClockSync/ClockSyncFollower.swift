@@ -79,7 +79,7 @@ nonisolated final class ClockSyncFollower: @unchecked Sendable {
     /// Called when the leader assigns this device a speaker channel (not for repeats).
     var onSpeakers: (@Sendable (_ layout: SpeakerLayout, _ channel: SpeakerChannel, _ switchLeaderTime: Int64) -> Void)?
 
-    private let queue = DispatchQueue(label: "me.ktiays.AsyncMusic.clock-sync.follower", qos: .userInteractive)
+    private let queue = DispatchQueue(label: "me.ktiays.asyncmusic.clock-sync.follower", qos: .userInteractive)
     private let endpoint: NWEndpoint
     private let identity: DeviceIdentity
     private var connection: NWConnection?

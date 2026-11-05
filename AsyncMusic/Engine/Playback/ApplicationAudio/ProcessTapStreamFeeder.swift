@@ -13,7 +13,7 @@ nonisolated final class ProcessTapStreamFeeder: @unchecked Sendable {
 
     var onReady: (@Sendable (Stream) -> Void)?
     var onFailure: (@Sendable (String) -> Void)?
-    private let queue = DispatchQueue(label: "me.ktiays.AsyncMusic.app-audio", qos: .userInitiated)
+    private let queue = DispatchQueue(label: "me.ktiays.asyncmusic.app-audio", qos: .userInitiated)
     private let application: AudioApplication
     private var capture: ApplicationAudioCapture?
     private var timer: DispatchSourceTimer?

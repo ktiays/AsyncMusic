@@ -12,7 +12,7 @@ nonisolated enum ClockSyncNetwork {
     /// Must also be listed under `NSBonjourServices` in Info.plist.
     static let serviceType = "_asyncmusic._udp"
 
-    static let logger = Logger(subsystem: "me.ktiays.AsyncMusic", category: "ClockSync")
+    static let logger = Logger(subsystem: "me.ktiays.asyncmusic", category: "ClockSync")
 
     static func parameters() -> NWParameters {
         let parameters = NWParameters.udp
@@ -72,7 +72,7 @@ nonisolated final class ClockSyncLeader: @unchecked Sendable {
     /// Called when playback was stopped because this device slept and its clock jumped.
     var onPlaybackReset: (@Sendable () -> Void)?
 
-    private let queue = DispatchQueue(label: "me.ktiays.AsyncMusic.clock-sync.leader", qos: .userInteractive)
+    private let queue = DispatchQueue(label: "me.ktiays.asyncmusic.clock-sync.leader", qos: .userInteractive)
     private var listener: NWListener?
     private var connections: [ObjectIdentifier: NWConnection] = [:]
     /// Host time each connection last received a packet. UDP flows never fail on their own, so
