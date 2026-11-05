@@ -48,6 +48,13 @@ final class SyncedPlayer {
     }
 
     /// The source of the stream most recently received from the leader.
+    /// This device's output level (0...1), applied after sync so it never moves the timing.
+    var volume: Float = UserDefaults.standard.object(forKey: SyncedPlayer.volumeKey) as? Float ?? 1 {
+        didSet {
+            engine.mainMixerNode.outputVolume = volume
+            UserDefaults.standard.set(volume, forKey: Self.volumeKey)
+        }
+    }
     private(set) var remoteStreamSource: UInt64?
 
     /// True when a file is playing that this device has neither locally nor from the leader.
@@ -96,6 +103,7 @@ final class SyncedPlayer {
     private let streamAheadDuration = 8.0
 
     private static let manualOffsetKey = "SyncedPlayer.manualOffset"
+    private static let volumeKey = "SyncedPlayer.volume"
     private static let logger = Logger(subsystem: "me.ktiays.AsyncMusic", category: "Playback")
 
     func start() {
@@ -217,6 +225,7 @@ final class SyncedPlayer {
         let node = Self.makeSourceNode(renderer: renderer, format: format)
         engine.attach(node)
         engine.connect(node, to: engine.mainMixerNode, format: format)
+        engine.mainMixerNode.outputVolume = volume
         sourceNode = node
         outputSampleRate = sampleRate
     }

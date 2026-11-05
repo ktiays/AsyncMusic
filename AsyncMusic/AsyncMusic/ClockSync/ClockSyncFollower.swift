@@ -56,6 +56,9 @@ nonisolated final class ClockSyncFollower: @unchecked Sendable {
         var reconnectDelay: DispatchTimeInterval = .seconds(1)
     }
 
+    /// The reconnect reason given while the system keeps this app off the local network.
+    static let localNetworkDenied = "Local Network access is off"
+
     enum State: Sendable, Equatable {
         case connecting
         case syncing
@@ -159,7 +162,13 @@ nonisolated final class ClockSyncFollower: @unchecked Sendable {
         case let .waiting(error):
             // The connection retries by itself once a usable network path appears.
             connectionReady = false
-            onStateChange?(.reconnecting("Waiting: \(error.localizedDescription)"))
+            // A LAN address with "network down" while the Mac is online means the Local
+            // Network privilege is off (or not yet answered).
+            if case .posix(.ENETDOWN) = error {
+                onStateChange?(.reconnecting(ClockSyncFollower.localNetworkDenied))
+            } else {
+                onStateChange?(.reconnecting("Waiting: \(error.localizedDescription)"))
+            }
         case let .failed(error):
             ClockSyncNetwork.logger.error("Follower connection failed: \(error, privacy: .public)")
             reconnect(reason: error.localizedDescription)

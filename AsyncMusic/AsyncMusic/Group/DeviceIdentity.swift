@@ -25,7 +25,9 @@ nonisolated struct DeviceIdentity: Sendable {
             defaults.set(NSNumber(value: id), forKey: idKey)
         }
         #if os(macOS)
-        let name = Host.current().localizedName ?? "Mac"
+        // The name chosen in the menu bar app's settings, else the Mac's own.
+        let custom = defaults.string(forKey: "AppSettings.deviceName")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let name = custom.isEmpty ? (Host.current().localizedName ?? "Mac") : custom
         #else
         // Apps only see the generic model name ("iPhone"), so tell same-model devices apart
         // with a short code derived from the ID.

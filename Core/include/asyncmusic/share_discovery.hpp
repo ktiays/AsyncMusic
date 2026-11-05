@@ -16,8 +16,12 @@
 #include <thread>
 #include <vector>
 
+#include "config.hpp"
 #include "net.hpp"
 #include "protocol.hpp"
+#include "ref_counted.hpp"
+
+AM_ASSUME_NONNULL_BEGIN
 
 namespace asyncmusic {
 
@@ -28,7 +32,7 @@ constexpr uint16_t kShareDiscoveryPort = 41750;
 /// boundary).
 constexpr size_t kShareMaximumTextLength = 120;
 
-enum class ShareSourceKind : uint8_t {
+enum class AM_CLOSED_ENUM ShareSourceKind : uint8_t {
     unknown = 0,
     /// Another app's audio (the source names the app).
     application = 1,
@@ -75,7 +79,7 @@ struct ShareInfo {
 /// sharer answers with an announcement right away, broadcast and also sent to the asker. Bytes after the fields above are ignored, so
 /// later versions can append fields; a different version number means an incompatible format.
 struct ShareMessage {
-    enum class Type : uint8_t {
+    enum class AM_CLOSED_ENUM Type : uint8_t {
         announce = 1,
         goodbye = 2,
         query = 3,
@@ -95,7 +99,7 @@ struct ShareMessage {
 
     Bytes encode() const;
     /// Returns false for anything that is not a well-formed message of a known type.
-    static bool decode(const uint8_t* data, size_t size, ShareMessage& message);
+    static bool decode(const uint8_t* AM_NULLABLE data, size_t size, ShareMessage& message);
 };
 
 /// A share heard on the network.
@@ -118,14 +122,14 @@ struct DiscoveredShare {
 };
 
 struct ShareEvent {
-    enum class Kind : uint8_t {
+    enum class AM_CLOSED_ENUM Kind : uint8_t {
         /// A share started (or was first heard): the moment to ask whether to join.
         appeared,
         /// Its details changed (listeners, source, name).
         updated,
         disappeared,
     };
-    enum class Reason : uint8_t {
+    enum class AM_CLOSED_ENUM Reason : uint8_t {
         none,
         /// The sharer said goodbye.
         ended,
@@ -177,11 +181,12 @@ struct ShareDiscoveryConfiguration {
 /// also go to the asker directly.
 ///
 /// The event handler runs on that thread, without locks held; it must not destroy the discovery.
-class ShareDiscovery {
+/// Swift owns it as a reference (`create`) and polls `generation()` instead of taking events.
+class ShareDiscovery : public RefCounted {
 public:
     using Configuration = ShareDiscoveryConfiguration;
 
-    enum class Mode : uint8_t { off, listening, sharing };
+    enum class AM_CLOSED_ENUM Mode : uint8_t { off, listening, sharing };
 
     struct Status {
         Mode mode = Mode::off;
@@ -196,9 +201,12 @@ public:
         std::vector<std::string> targets;
     };
 
+    /// A discovery with the default configuration and no event handler, holding one reference.
+    static ShareDiscovery* create(uint64_t device) SWIFT_RETURNS_RETAINED;
+
     explicit ShareDiscovery(uint64_t device, Configuration configuration = {});
     ShareDiscovery(uint64_t device, std::function<void(const ShareEvent&)> onEvent, Configuration configuration = {});
-    ~ShareDiscovery();
+    ~ShareDiscovery() override;
     ShareDiscovery(const ShareDiscovery&) = delete;
     ShareDiscovery& operator=(const ShareDiscovery&) = delete;
 
@@ -280,6 +288,11 @@ private:
     uint64_t random_ = 0;
 
     std::thread thread_;
-};
+} SWIFT_SHARED_REFERENCE(asyncmusic_share_discovery_retain, asyncmusic_share_discovery_release);
 
 }  // namespace asyncmusic
+
+inline void asyncmusic_share_discovery_retain(asyncmusic::ShareDiscovery* object) { object->retain(); }
+inline void asyncmusic_share_discovery_release(asyncmusic::ShareDiscovery* object) { object->release(); }
+
+AM_ASSUME_NONNULL_END

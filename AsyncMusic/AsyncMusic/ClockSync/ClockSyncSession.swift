@@ -41,7 +41,8 @@ final class ClockSyncSession {
     }
 
     let identity = DeviceIdentity.current()
-    var deviceName: String { identity.name }
+    /// Read when leading starts, so a renamed device leads under its new name.
+    var deviceName: String { DeviceIdentity.current().name }
     let player = SyncedPlayer()
     #if os(macOS)
     let applicationAudio = ApplicationAudioSource()
@@ -71,6 +72,8 @@ final class ClockSyncSession {
     private(set) var status = "Idle"
 
     // Leader
+    /// The UDP port the leader's clock listens on, once it does.
+    private(set) var leaderPort: UInt16?
     private(set) var followerCount = 0
     /// Followers that introduced themselves, with whether each is currently reachable.
     private(set) var members: [ClockSyncLeader.Member] = []
@@ -571,9 +574,11 @@ final class ClockSyncSession {
         case .starting:
             status = "Starting listener…"
         case let .advertising(port):
+            leaderPort = port
             status = "Advertising as “\(deviceName)”"
             append("Advertising on UDP port \(port)")
         case let .failed(message):
+            leaderPort = nil
             status = "Failed: \(message)"
             append("Leader error: \(message)")
         case .stopped:
@@ -657,9 +662,13 @@ final class ClockSyncSession {
         case .connecting:
             status = "Connecting to \(connectedLeader ?? "leader")…"
         case .syncing:
+            isLocalNetworkDenied = false
             status = "Syncing with \(connectedLeader ?? "leader")"
             append("Connected")
         case let .reconnecting(reason):
+            if reason == ClockSyncFollower.localNetworkDenied, !isLocalNetworkDenied {
+                isLocalNetworkDenied = true
+            }
             status = "Reconnecting to \(connectedLeader ?? "leader")…"
             append("Reconnecting: \(reason)")
         case let .failed(message):
@@ -714,6 +723,7 @@ final class ClockSyncSession {
         browser?.cancel()
         browser = nil
         isLocalNetworkDenied = false
+        leaderPort = nil
         followerCount = 0
         members = []
         activeChannels = [:]

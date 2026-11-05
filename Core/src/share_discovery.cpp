@@ -175,6 +175,10 @@ bool ShareMessage::decode(const uint8_t* data, size_t size, ShareMessage& messag
 
 // MARK: - ShareDiscovery
 
+ShareDiscovery* ShareDiscovery::create(uint64_t device) {
+    return new ShareDiscovery(device);
+}
+
 ShareDiscovery::ShareDiscovery(uint64_t device, Configuration configuration) : ShareDiscovery(device, nullptr, std::move(configuration)) {}
 
 ShareDiscovery::ShareDiscovery(uint64_t device, std::function<void(const ShareEvent&)> onEvent, Configuration configuration)
