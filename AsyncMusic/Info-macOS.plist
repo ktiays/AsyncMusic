@@ -2,7 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- The Mac app only controls AsyncMusic Server, which captures audio and uses the network
-	     and asks for those permissions (Server-Info.plist). -->
+	<!-- AsyncMusic Server (Server-Info.plist) captures audio, but TCC attributes a helper nested
+	     in Contents/Helpers to this outer app and reads the usage string from here. Without it
+	     tccd refuses the request silently and the process tap only delivers silence. -->
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>AsyncMusic captures the app you choose so its audio can play in sync on your speakers.</string>
 </dict>
 </plist>
