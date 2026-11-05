@@ -13,15 +13,19 @@
 #include <asyncmusic/net.hpp>
 #include <asyncmusic/serial_queue.hpp>
 #include <asyncmusic/session.hpp>
+#include <asyncmusic/share_discovery.hpp>
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdio>
 #include <functional>
 #include <limits>
+#include <memory>
 #include <mutex>
+#include <optional>
 #include <random>
 #include <string>
 #include <thread>
@@ -1081,6 +1085,271 @@ void sleepClock() {
     CHECK(worst < kSleepDetectionThreshold, "sleep reading jitter %lldns", static_cast<long long>(worst));
 }
 
+
+// MARK: - Share discovery
+
+void shareMessagesRoundTrip() {
+    ShareInfo info;
+    info.name = "Living Room iMac";
+    info.source = "Music";
+    info.sourceKind = ShareSourceKind::application;
+    info.clockPort = 50123;
+    info.listenerCount = 3;
+    const auto announce = ShareMessage::makeAnnounce(0x0102030405060708ull, 0x1112131415161718ull, 7, 2, 7000, info);
+    const Bytes bytes = announce.encode();
+    // header, then device, share, sequence, revision, lifetime, port, listeners, kind, name, source
+    CHECK(bytes.size() == 4 + 8 + 8 + 4 + 4 + 2 + 2 + 2 + 1 + 1 + 16 + 1 + 5, "announce length %zu", bytes.size());
+    CHECK(bytes[0] == 'A' && bytes[1] == 'D' && bytes[2] == 1 && bytes[3] == 1, "header");
+    CHECK(bytes[4] == 0x08 && bytes[11] == 0x01, "little-endian device");
+    ShareMessage decoded;
+    CHECK(ShareMessage::decode(bytes.data(), bytes.size(), decoded), "announce decodes");
+    CHECK(decoded.type == ShareMessage::Type::announce && decoded.device == announce.device && decoded.share == announce.share && decoded.sequence == 7
+              && decoded.revision == 2 && decoded.lifetimeMilliseconds == 7000 && decoded.info == info,
+        "announce fields");
+
+    // Later versions may append fields; this version reads what it knows.
+    Bytes extended = bytes;
+    extended.insert(extended.end(), {9, 9, 9});
+    CHECK(ShareMessage::decode(extended.data(), extended.size(), decoded) && decoded.info == info, "trailing bytes ignored");
+
+    const auto goodbye = ShareMessage::makeGoodbye(5, 6).encode();
+    CHECK(goodbye.size() == 20 && ShareMessage::decode(goodbye.data(), goodbye.size(), decoded) && decoded.type == ShareMessage::Type::goodbye && decoded.share == 6,
+        "goodbye");
+    const auto query = ShareMessage::makeQuery(5).encode();
+    CHECK(query.size() == 12 && ShareMessage::decode(query.data(), query.size(), decoded) && decoded.type == ShareMessage::Type::query && decoded.device == 5, "query");
+
+    // Rejected: truncations, other magic or version, unknown types, zero IDs and ports.
+    for (size_t length = 0; length < bytes.size(); ++length) {
+        CHECK(!ShareMessage::decode(bytes.data(), length, decoded), "truncated to %zu accepted", length);
+    }
+    Bytes bad = bytes;
+    bad[1] = 'S';
+    CHECK(!ShareMessage::decode(bad.data(), bad.size(), decoded), "other magic");
+    bad = bytes;
+    bad[2] = 2;
+    CHECK(!ShareMessage::decode(bad.data(), bad.size(), decoded), "other version");
+    bad = bytes;
+    bad[3] = 9;
+    CHECK(!ShareMessage::decode(bad.data(), bad.size(), decoded), "unknown type");
+    CHECK(!ShareMessage::decode(nullptr, 0, decoded), "null");
+    auto noPort = info;
+    noPort.clockPort = 0;
+    const auto portless = ShareMessage::makeAnnounce(1, 2, 1, 1, 7000, noPort).encode();
+    CHECK(!ShareMessage::decode(portless.data(), portless.size(), decoded), "no clock port");
+    const auto zeroShare = ShareMessage::makeAnnounce(1, 0, 1, 1, 7000, info).encode();
+    CHECK(!ShareMessage::decode(zeroShare.data(), zeroShare.size(), decoded), "zero share");
+
+    // Unknown source kinds still describe a share; long names are cut between characters.
+    bad = bytes;
+    bad[4 + 8 + 8 + 4 + 4 + 2 + 2 + 2] = 77;
+    CHECK(ShareMessage::decode(bad.data(), bad.size(), decoded) && decoded.info.sourceKind == ShareSourceKind::unknown, "unknown kind");
+    auto longName = info;
+    longName.name.clear();
+    for (int i = 0; i < 100; ++i) longName.name += "\xE9\x9F\xB3";  // 音, 3 bytes each
+    const auto cut = ShareMessage::makeAnnounce(1, 2, 1, 1, 7000, longName).encode();
+    CHECK(ShareMessage::decode(cut.data(), cut.size(), decoded), "long name decodes");
+    CHECK(decoded.info.name.size() == 120 && decoded.info.name == longName.name.substr(0, 120), "name cut to %zu bytes", decoded.info.name.size());
+}
+
+/// Collects a discovery's events for a test to wait on.
+class ShareEventLog {
+public:
+    std::function<void(const ShareEvent&)> handler() {
+        return [this](const ShareEvent& event) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            events_.push_back(event);
+            changed_.notify_all();
+        };
+    }
+    /// Waits for an event matching `kind` (and `reason`, unless none) after the first `from`.
+    std::optional<ShareEvent> waitFor(ShareEvent::Kind kind, ShareEvent::Reason reason, size_t from, int milliseconds) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        std::optional<ShareEvent> found;
+        changed_.wait_for(lock, std::chrono::milliseconds(milliseconds), [&] {
+            for (size_t i = from; i < events_.size(); ++i) {
+                if (events_[i].kind == kind && (reason == ShareEvent::Reason::none || events_[i].reason == reason)) {
+                    found = events_[i];
+                    return true;
+                }
+            }
+            return false;
+        });
+        return found;
+    }
+    size_t count() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return events_.size();
+    }
+    size_t count(ShareEvent::Kind kind, size_t from = 0) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        size_t result = 0;
+        for (size_t i = from; i < events_.size(); ++i) result += events_[i].kind == kind;
+        return result;
+    }
+
+private:
+    std::mutex mutex_;
+    std::condition_variable changed_;
+    std::vector<ShareEvent> events_;
+};
+
+/// Two devices on loopback: each sends to the other's port instead of broadcasting.
+struct SharePair {
+    uint16_t sharerPort;
+    uint16_t listenerPort;
+
+    SharePair() {
+        std::random_device random;
+        sharerPort = static_cast<uint16_t>(43000 + random() % 10000);
+        listenerPort = static_cast<uint16_t>(sharerPort + 1);
+    }
+    ShareDiscovery::Configuration configuration(bool sharer) const {
+        ShareDiscovery::Configuration result;
+        result.port = sharer ? sharerPort : listenerPort;
+        result.targets = {*net::Address::fromString("127.0.0.1", sharer ? listenerPort : sharerPort)};
+        result.fastInterval = 40'000'000;
+        result.fastCount = 3;
+        result.steadyInterval = 150'000'000;
+        result.lifetime = 1'000'000'000;
+        result.repeatSpacing = 20'000'000;
+        result.minimumQueryAnswerSpacing = 50'000'000;
+        result.endedMemory = 2'000'000'000;
+        return result;
+    }
+};
+
+ShareInfo testShareInfo(const char* name) {
+    ShareInfo info;
+    info.name = name;
+    info.source = "Music";
+    info.sourceKind = ShareSourceKind::application;
+    info.clockPort = 50555;
+    return info;
+}
+
+void shareDiscoveryLifecycle() {
+    const SharePair pair;
+    ShareEventLog log;
+    ShareDiscovery listener(1, log.handler(), pair.configuration(false));
+    ShareDiscovery sharer(2, pair.configuration(true));
+    listener.listen();
+    ShareInfo info = testShareInfo("Kitchen PC");
+    sharer.share(info);
+
+    const auto appeared = log.waitFor(ShareEvent::Kind::appeared, ShareEvent::Reason::none, 0, 1000);
+    CHECK(appeared.has_value(), "share appears");
+    if (!appeared) return;
+    CHECK(appeared->share.device == 2 && appeared->share.info == info && appeared->share.revision == 1, "announced details");
+    CHECK(appeared->share.address.host() == "127.0.0.1" && appeared->share.address.port() == 50555, "joins at %s", appeared->share.address.toString().c_str());
+    CHECK(listener.shares().size() == 1 && listener.generation() > 0, "listed");
+
+    // Details change: an update, not a new share.
+    size_t mark = log.count();
+    info.listenerCount = 4;
+    sharer.update(info);
+    const auto updated = log.waitFor(ShareEvent::Kind::updated, ShareEvent::Reason::none, mark, 1000);
+    CHECK(updated && updated->share.info.listenerCount == 4 && updated->share.revision == 2 && updated->share.share == appeared->share.share, "update arrives");
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    CHECK(log.count(ShareEvent::Kind::appeared, mark) == 0, "no second alert for the same share");
+
+    // Sharing again is a new share: worth a new alert.
+    mark = log.count();
+    sharer.share(info);
+    CHECK(log.waitFor(ShareEvent::Kind::appeared, ShareEvent::Reason::none, mark, 1000).has_value(), "new share appears");
+    const auto shares = listener.shares();
+    CHECK(shares.size() == 1 && shares.front().share != appeared->share.share, "the new share replaces the old");
+
+    // Goodbye removes it at once, and late announcements of it do not bring it back.
+    mark = log.count();
+    const auto stopped = std::chrono::steady_clock::now();
+    sharer.stop();
+    const auto gone = log.waitFor(ShareEvent::Kind::disappeared, ShareEvent::Reason::ended, mark, 1000);
+    CHECK(gone.has_value(), "goodbye ends the share");
+    CHECK(std::chrono::steady_clock::now() - stopped < std::chrono::milliseconds(500), "promptly");
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    CHECK(listener.shares().empty() && log.count(ShareEvent::Kind::appeared, mark) == 0, "stays gone");
+}
+
+void shareDiscoveryTimesOut() {
+    const SharePair pair;
+    ShareEventLog log;
+    ShareDiscovery listener(1, log.handler(), pair.configuration(false));
+    auto configuration = pair.configuration(true);
+    // A sharer that vanishes without its goodbyes getting through.
+    configuration.dropOutgoing = [](const ShareMessage& message) { return message.type == ShareMessage::Type::goodbye; };
+    auto sharer = std::make_unique<ShareDiscovery>(2, configuration);
+    listener.listen();
+    sharer->share(testShareInfo("Laptop"));
+    CHECK(log.waitFor(ShareEvent::Kind::appeared, ShareEvent::Reason::none, 0, 1000).has_value(), "appears");
+    const auto vanished = std::chrono::steady_clock::now();
+    sharer.reset();
+    const auto gone = log.waitFor(ShareEvent::Kind::disappeared, ShareEvent::Reason::timedOut, 0, 3000);
+    const auto waited = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - vanished).count();
+    CHECK(gone.has_value(), "forgotten after its lifetime");
+    CHECK(waited >= 700 && waited < 1600, "after %lld ms (lifetime 1000 ms)", static_cast<long long>(waited));
+}
+
+void shareDiscoveryAnswersQueries() {
+    const SharePair pair;
+    auto configuration = pair.configuration(true);
+    configuration.fastCount = 1;
+    configuration.steadyInterval = 30'000'000'000;
+    configuration.lifetime = 60'000'000'000;
+    ShareDiscovery sharer(2, configuration);
+    sharer.share(testShareInfo("Quiet Mac"));
+    // Its one announcement goes out before anyone listens.
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+    ShareEventLog log;
+    ShareDiscovery listener(1, log.handler(), pair.configuration(false));
+    const auto started = std::chrono::steady_clock::now();
+    listener.listen();
+    CHECK(log.waitFor(ShareEvent::Kind::appeared, ShareEvent::Reason::none, 0, 1000).has_value(), "a query finds a quiet sharer");
+    CHECK(std::chrono::steady_clock::now() - started < std::chrono::milliseconds(500), "right away");
+    CHECK(sharer.status().queriesAnswered >= 1, "answered");
+}
+
+void shareDiscoverySurvivesLoss() {
+    const SharePair pair;
+    auto configuration = pair.configuration(true);
+    // Every other announcement lost, as on a bad Wi-Fi link.
+    auto counter = std::make_shared<std::atomic<int>>(0);
+    configuration.dropOutgoing = [counter](const ShareMessage& message) { return message.type == ShareMessage::Type::announce && (++*counter % 2) == 0; };
+    ShareEventLog log;
+    ShareDiscovery listener(1, log.handler(), pair.configuration(false));
+    ShareDiscovery sharer(2, configuration);
+    listener.listen();
+    sharer.share(testShareInfo("Flaky"));
+    CHECK(log.waitFor(ShareEvent::Kind::appeared, ShareEvent::Reason::none, 0, 1000).has_value(), "appears");
+    std::this_thread::sleep_for(std::chrono::milliseconds(2500));
+    CHECK(log.count(ShareEvent::Kind::disappeared) == 0 && log.count(ShareEvent::Kind::appeared) == 1, "no flapping");
+    const auto shares = listener.shares();
+    CHECK(shares.size() == 1 && shares.front().missed >= 3 && shares.front().received >= 3, "loss measured: received %u, missed %u",
+        shares.empty() ? 0 : shares.front().received, shares.empty() ? 0 : shares.front().missed);
+}
+
+void shareDiscoveryModesExclude() {
+    const SharePair pair;
+    ShareEventLog log;
+    // This device listens, then starts sharing itself.
+    ShareDiscovery device(1, log.handler(), pair.configuration(false));
+    ShareDiscovery other(2, pair.configuration(true));
+    device.listen();
+    other.share(testShareInfo("Other"));
+    CHECK(log.waitFor(ShareEvent::Kind::appeared, ShareEvent::Reason::none, 0, 1000).has_value(), "hears the other share");
+    size_t mark = log.count();
+    device.share(testShareInfo("Me"));
+    CHECK(log.waitFor(ShareEvent::Kind::disappeared, ShareEvent::Reason::none, mark, 1000).has_value(), "forgets what it heard");
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    CHECK(device.shares().empty() && log.count(ShareEvent::Kind::appeared, mark) == 0, "a sharer does not listen");
+    CHECK(device.status().mode == ShareDiscovery::Mode::sharing && device.status().share != 0, "sharing");
+    // And back: listening again hears the other share right away (its query is answered).
+    mark = log.count();
+    device.listen();
+    CHECK(log.waitFor(ShareEvent::Kind::appeared, ShareEvent::Reason::none, mark, 1000).has_value(), "listens again");
+    CHECK(device.status().mode == ShareDiscovery::Mode::listening, "listening");
+}
+
 }  // namespace
 
 int main() {
@@ -1112,6 +1381,12 @@ int main() {
     run("session: leads a follower", sessionLeadsFollower);
     run("playback position", playbackPosition);
     run("host clock", sleepClock);
+    run("share: messages round trip", shareMessagesRoundTrip);
+    run("share: lifecycle", shareDiscoveryLifecycle);
+    run("share: times out", shareDiscoveryTimesOut);
+    run("share: answers queries", shareDiscoveryAnswersQueries);
+    run("share: survives loss", shareDiscoverySurvivesLoss);
+    run("share: listen or share", shareDiscoveryModesExclude);
     std::printf("%s\n", failures == 0 ? "All tests passed." : "Some tests FAILED.");
     return failures == 0 ? 0 : 1;
 }

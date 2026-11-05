@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <vector>
 
 /// Thin, portable wrappers over BSD sockets and Winsock, just what the group protocols need.
 /// No platform headers leak out of here; everything is blocking with timeouts, so callers run
@@ -86,6 +87,11 @@ class UDPSocket : public Socket {
 public:
     /// An IPv6 socket is dual-stack: it also sends and receives IPv4 (as mapped addresses).
     bool open(int family);
+    /// Lets other sockets bind the same port (call before `bind`). Each of them then receives
+    /// every broadcast sent to it; which one gets a unicast datagram is up to the system.
+    bool allowPortSharing();
+    /// Allows sending to broadcast addresses (IPv4).
+    bool enableBroadcast();
     /// Binds to `port` (0: any) on all interfaces of the socket's family.
     bool bind(uint16_t port);
     bool connect(const Address& address);
@@ -125,5 +131,10 @@ public:
     /// Waits up to `timeoutMilliseconds` for a connection; the result is closed if none came.
     TCPSocket accept(int timeoutMilliseconds, Address* peer = nullptr);
 };
+
+/// The directed broadcast address (port 0) of every IPv4 interface that is up and can
+/// broadcast: loopback, point-to-point links and tunnels (VPNs) are left out. Read fresh on each
+/// call, so it follows networks coming and going.
+std::vector<Address> ipv4BroadcastAddresses();
 
 }  // namespace asyncmusic::net

@@ -19,6 +19,7 @@ interoperability; other platforms (`../Windows`, `../Android`) link it directly.
 | `audio_stream.hpp` | `AudioStreamClient`: receives a leader's stream over TCP into a `StreamBuffer`, decoding ALAC or PCM16, and reports its buffer. `AudioStreamServer`: forwards the leader's buffer to every follower and tells when all have enough (adaptive start) |
 | `media.hpp` | `AudioDecoder` (implemented by the platform) and `MediaFile`, and `FileStreamFeeder`, which decodes a file a few seconds ahead of playback |
 | `player.hpp` | `Player`: keeps a renderer fed with the clock map, playback state, channel and what to play: a local file stream or the leader's (the engine-independent part of the Apple app's `SyncedPlayer`) |
+| `share_discovery.hpp` | `ShareDiscovery`: announces this device's share or listens for others' (never both) by UDP broadcast on port 41750, with goodbyes, queries, expiry and loss counts; the wire format is documented on `ShareMessage` |
 | `session.hpp` | `GroupSession`: leads (play/stop, adaptive start, speaker layouts and channel assignment) or follows, and keeps the state, round history and log a UI shows (the counterpart of the Apple app's `ClockSyncSession`) |
 
 The headers from `alac.hpp` down are not part of the Swift module (`asyncmusic.hpp`); the Apple
@@ -35,6 +36,10 @@ app keeps its Swift versions of those components for now.
 - **mDNS** for the service `_asyncmusic._udp` (`kClockSyncServiceType`): finding leaders
   (`GroupSession::follow` takes a resolver that looks the leader up again on every reconnect),
   and advertising `Snapshot::leaderPort` under the device's name while leading.
+- **Share discovery's network access**: nothing to provide on macOS beyond Local Network
+  permission (the app's `NSLocalNetworkUsageDescription`). Android only delivers broadcasts to
+  apps holding a `WifiManager.MulticastLock` while listening. Windows Firewall must allow inbound
+  UDP 41750 for the executable to hear shares (sending needs no rule).
 - **Decoding files**: an `AudioDecoder` per `MediaFile` that seeks sample-accurately, and the
   file's ID from the SHA-256 of its contents (`mediaFileID`).
 - **Identity and settings**: a stable device ID and a display name (`DeviceIdentity`), and
@@ -62,12 +67,13 @@ loopback, the follower and stream client run against a fake leader, the core's l
 stream server against the core's follower and client, and a leading and a following
 `GroupSession` play a file with adaptive start and a stereo pair end to end.
 
-Three tools are built with the tests, for trying devices against each other without full apps:
+Four tools are built with the tests, for trying devices against each other without full apps:
 `tools/test_leader.cpp`, a bare-bones leader that plays the metronome or the channel test
 (optionally as one side of a stereo pair), `tools/test_host.cpp`, which hosts a WAV file
-with `GroupSession` (an Apple device following it plays the ALAC stream), and
+with `GroupSession` (an Apple device following it plays the ALAC stream), 
 `tools/test_follower.cpp`, which follows a host at a given address and prints how its clock and
-stream arrive (rendering into nothing).
+stream arrive (rendering into nothing), and `tools/share_beacon.cpp`, which shares or listens on
+the real network and reports every share event and how many announcements were lost.
 
 ## Real-time rules
 

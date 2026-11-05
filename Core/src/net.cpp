@@ -18,13 +18,17 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <mstcpip.h>
+#include <iphlpapi.h>
 #pragma comment(lib, "ws2_32.lib")
+#pragma comment(lib, "iphlpapi.lib")
 #ifndef SIO_UDP_CONNRESET
 #define SIO_UDP_CONNRESET _WSAIOW(IOC_VENDOR, 12)
 #endif
 #else
 #include <cerrno>
 #include <fcntl.h>
+#include <ifaddrs.h>
+#include <net/if.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -275,6 +279,24 @@ bool UDPSocket::open(int family) {
     return true;
 }
 
+bool UDPSocket::allowPortSharing() {
+    if (!isOpen()) return false;
+    const int one = 1;
+    const auto* value = reinterpret_cast<const char*>(&one);
+    bool ok = setsockopt(native(handle_), SOL_SOCKET, SO_REUSEADDR, value, sizeof(one)) == 0;
+#if defined(SO_REUSEPORT)
+    // BSD and Linux deliver broadcasts to every socket on a shared port only with this.
+    ok = setsockopt(native(handle_), SOL_SOCKET, SO_REUSEPORT, value, sizeof(one)) == 0 && ok;
+#endif
+    return ok;
+}
+
+bool UDPSocket::enableBroadcast() {
+    if (!isOpen()) return false;
+    const int one = 1;
+    return setsockopt(native(handle_), SOL_SOCKET, SO_BROADCAST, reinterpret_cast<const char*>(&one), sizeof(one)) == 0;
+}
+
 bool UDPSocket::bind(uint16_t port) {
     sockaddr_storage storage{};
     Length length = 0;
@@ -435,6 +457,62 @@ TCPSocket TCPListener::accept(int timeoutMilliseconds, Address* peer) {
     setNonBlocking(socket, false);
     result.adopt(wrap(socket));
     if (peer != nullptr) *peer = Address::fromSockaddr(&storage, static_cast<size_t>(length));
+    return result;
+}
+
+// MARK: - Interfaces
+
+std::vector<Address> ipv4BroadcastAddresses() {
+    std::vector<Address> result;
+    const auto add = [&result](uint32_t networkOrder) {
+        sockaddr_in address{};
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = networkOrder;
+        const Address candidate = Address::fromSockaddr(&address, sizeof(address));
+        if (std::find(result.begin(), result.end(), candidate) == result.end()) result.push_back(candidate);
+    };
+#if defined(_WIN32)
+    startup();
+    ULONG size = 16 * 1024;
+    std::vector<unsigned char> buffer;
+    ULONG status = ERROR_BUFFER_OVERFLOW;
+    for (int attempt = 0; attempt < 3 && status == ERROR_BUFFER_OVERFLOW; ++attempt) {
+        buffer.resize(size);
+        status = GetAdaptersAddresses(AF_INET, GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER, nullptr,
+            reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.data()), &size);
+    }
+    if (status != NO_ERROR) return result;
+    for (auto* adapter = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.data()); adapter != nullptr; adapter = adapter->Next) {
+        if (adapter->OperStatus != IfOperStatusUp) continue;
+        if (adapter->IfType == IF_TYPE_SOFTWARE_LOOPBACK || adapter->IfType == IF_TYPE_TUNNEL || adapter->IfType == IF_TYPE_PPP) continue;
+        for (auto* unicast = adapter->FirstUnicastAddress; unicast != nullptr; unicast = unicast->Next) {
+            const auto* address = reinterpret_cast<const sockaddr_in*>(unicast->Address.lpSockaddr);
+            const UINT8 prefix = unicast->OnLinkPrefixLength;
+            if (address == nullptr || address->sin_family != AF_INET || prefix == 0 || prefix >= 31) continue;
+            const uint32_t host = ntohl(address->sin_addr.s_addr);
+            if ((host >> 16) == 0xA9FE) continue;  // 169.254/16: no DHCP answer, not a real network
+            const uint32_t hostBits = 0xFFFFFFFFu >> prefix;
+            add(htonl(host | hostBits));
+        }
+    }
+#else
+    ifaddrs* list = nullptr;
+    if (getifaddrs(&list) != 0) return result;
+    for (const ifaddrs* entry = list; entry != nullptr; entry = entry->ifa_next) {
+        if (entry->ifa_addr == nullptr || entry->ifa_addr->sa_family != AF_INET) continue;
+        const unsigned flags = entry->ifa_flags;
+        if (!(flags & IFF_UP) || !(flags & IFF_RUNNING) || !(flags & IFF_BROADCAST) || (flags & IFF_LOOPBACK) || (flags & IFF_POINTOPOINT)) continue;
+        const auto* address = reinterpret_cast<const sockaddr_in*>(entry->ifa_addr);
+        if ((ntohl(address->sin_addr.s_addr) >> 16) == 0xA9FE) continue;  // link-local fallback
+        if (entry->ifa_broadaddr != nullptr && entry->ifa_broadaddr->sa_family == AF_INET) {
+            add(reinterpret_cast<const sockaddr_in*>(entry->ifa_broadaddr)->sin_addr.s_addr);
+        } else if (entry->ifa_netmask != nullptr) {
+            const uint32_t mask = reinterpret_cast<const sockaddr_in*>(entry->ifa_netmask)->sin_addr.s_addr;
+            add(address->sin_addr.s_addr | ~mask);
+        }
+    }
+    freeifaddrs(list);
+#endif
     return result;
 }
 

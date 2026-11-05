@@ -44,6 +44,7 @@ add_library(asyncmusic_core
     src/renderer.cpp
     src/serial_queue.cpp
     src/session.cpp
+    src/share_discovery.cpp
     src/speakers.cpp
     src/stream_buffer.cpp
 )
@@ -52,7 +53,7 @@ target_include_directories(asyncmusic_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/in
 find_package(Threads REQUIRED)
 target_link_libraries(asyncmusic_core PRIVATE asyncmusic_alac PUBLIC Threads::Threads)
 if(WIN32)
-    target_link_libraries(asyncmusic_core PUBLIC ws2_32)
+    target_link_libraries(asyncmusic_core PUBLIC ws2_32 iphlpapi)
 endif()
 if(MSVC)
     target_compile_options(asyncmusic_core PRIVATE /W4)
@@ -74,4 +75,6 @@ if(ASYNCMUSIC_BUILD_TESTS)
     target_link_libraries(test_host PRIVATE asyncmusic_core)
     add_executable(test_follower tools/test_follower.cpp)
     target_link_libraries(test_follower PRIVATE asyncmusic_core)
+    add_executable(share_beacon tools/share_beacon.cpp)
+    target_link_libraries(share_beacon PRIVATE asyncmusic_core)
 endif()
