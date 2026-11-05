@@ -42,7 +42,8 @@ struct ShareIcon: View {
 
             context.stroke(Self.innerArcs, with: shading, style: style)
             context.stroke(Self.stem, with: shading, style: style)
-            context.fill(Self.head, with: shading)
+            context.fill(Self.stemBase(lineWidth: width), with: shading)
+            context.fill(Self.head(lineWidth: width), with: shading)
 
             if showsBadge {
                 context.fill(Path(ellipseIn: CGRect(x: 17.6, y: 2.6, width: 4.8, height: 4.8)), with: shading)
@@ -78,16 +79,29 @@ struct ShareIcon: View {
 
     static let stem: Path = {
         var path = Path()
-        path.move(to: CGPoint(x: 11.95, y: 14.4))
+        // Round-capped down to just inside the head; `stemBase` carries it the rest of the way.
+        path.move(to: CGPoint(x: 11.95, y: 13.4))
         path.addLine(to: CGPoint(x: 11.95, y: 9.2))
         path.addQuadCurve(to: CGPoint(x: 14.05, y: 11.3), control: CGPoint(x: 12.35, y: 10.6))
         return path
     }()
 
-    static let head: Path = {
+    /// The head's rightmost point, relative to its centre: 1.853 right and 0.262 up. Its edge is
+    /// vertical there, so the stem's right edge runs into the head without a notch.
+    private static let headRightmost = CGPoint(x: 1.853, y: -0.262)
+    private static let headCenterY: CGFloat = 14.6
+
+    /// The stem's square-ended bottom, down to the head's rightmost point.
+    static func stemBase(lineWidth: CGFloat) -> Path {
+        Path(CGRect(x: 11.95 - lineWidth / 2, y: 13.4, width: lineWidth, height: headCenterY + headRightmost.y - 13.4))
+    }
+
+    /// The head, placed so its rightmost point lies on the stem's right edge.
+    static func head(lineWidth: CGFloat) -> Path {
+        let centerX = 11.95 + lineWidth / 2 - headRightmost.x
         let ellipse = Path(ellipseIn: CGRect(x: -1.9, y: -1.45, width: 3.8, height: 2.9))
-        return ellipse.applying(CGAffineTransform(rotationAngle: -20 * .pi / 180).concatenating(CGAffineTransform(translationX: 10.9, y: 14.6)))
-    }()
+        return ellipse.applying(CGAffineTransform(rotationAngle: -20 * .pi / 180).concatenating(CGAffineTransform(translationX: centerX, y: headCenterY)))
+    }
 }
 
 enum MenuBarIcon {
