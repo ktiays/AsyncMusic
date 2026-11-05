@@ -306,7 +306,6 @@ final class ShareCenter {
             return
         }
         alerts.insert(contentsOf: fresh, at: 0)
-        if settings.playsAlertSound { NSSound(named: "Glass")?.play() }
         onAlert?()
     }
 

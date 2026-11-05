@@ -22,7 +22,7 @@ enum SettingsSectionID: Hashable {
             SettingsSection("General", id: .general, systemImage: "gearshape", iconColor: .gray,
                             keywords: ["Name", "Login", "Server", "Background", "Service"]),
             SettingsSection("Share Alerts", id: .alerts, systemImage: "bell.badge", iconColor: .red,
-                            keywords: ["Notifications", "Sound"]),
+                            keywords: ["Notifications"]),
             SettingsSection("About", id: .about, systemImage: "info.circle", iconColor: .gray,
                             keywords: ["Version", "Diagnostics", "Quit"]),
         ]),
@@ -87,7 +87,6 @@ struct SettingsContent: View {
                         Text(behavior.title).tag(behavior)
                     }
                 }
-                Toggle("Play sound", isOn: $settings.playsAlertSound)
             } footer: {
                 Text("“Only List” skips the alert; shares still appear in the Listen tab.")
             }

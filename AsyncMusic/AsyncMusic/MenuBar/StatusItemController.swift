@@ -19,7 +19,7 @@ final class StatusItemController: NSObject {
 
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private lazy var panel: AnchoredPanel = {
-        let panel = AnchoredPanel(canBecomeKey: true)
+        let panel = AnchoredPanel(canBecomeKey: true, background: .glass(cornerRadius: 22))
         panel.host {
             MenuBarPanel(client: client, willOpenSettings: { [unowned self] in
                 closePanel()
@@ -102,7 +102,7 @@ final class StatusItemController: NSObject {
     func openPanel() {
         client.setPanelVisible(true)
         reportIconFrame()
-        if let iconFrame { panel.place(at: .below(iconFrame)) }
+        if let iconFrame { panel.place(at: panel.anchor(below: iconFrame)) }
         NSApp.activate()
         panel.makeKeyAndOrderFront(nil)
         statusItem.button?.highlight(true)

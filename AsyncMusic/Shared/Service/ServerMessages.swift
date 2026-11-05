@@ -110,7 +110,6 @@ nonisolated struct ServiceSettings: Equatable, Codable, Sendable {
     /// The name other devices see. Empty means the Mac's own name.
     var customDeviceName = ""
     var alertBehavior = AlertBehavior.showAlert
-    var playsAlertSound = false
 
     var deviceName: String {
         let trimmed = customDeviceName.trimmingCharacters(in: .whitespacesAndNewlines)

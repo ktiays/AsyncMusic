@@ -86,9 +86,9 @@ final class AlertController {
 
     private func place() {
         if let statusItemFrame {
-            let anchor = AnchoredPanel.Anchor.below(statusItemFrame)
+            let anchor = panel.anchor(below: statusItemFrame)
             panel.place(at: anchor)
-            presentation.anchorX = statusItemFrame.midX - panel.frame.minX - AnchoredPanel.margin
+            presentation.anchorX = statusItemFrame.midX - panel.frame.minX - panel.margin
         } else {
             let mouse = NSEvent.mouseLocation
             let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) } ?? NSScreen.main

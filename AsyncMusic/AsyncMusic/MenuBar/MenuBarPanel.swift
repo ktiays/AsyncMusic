@@ -44,7 +44,8 @@ struct MenuBarPanel: View {
             }
         }
         .frame(width: 340)
-        .glassEffect(.regular, in: .rect(cornerRadius: 22))
+        // Crossfades the sections; the panel animates the window to the new height.
+        .animation(.spring(AnchoredPanel.resizeSpring), value: client.state.mode)
     }
 
     private var header: some View {
@@ -73,7 +74,7 @@ struct MenuBarPanel: View {
                 Text(mode.rawValue).tag(mode)
             }
         }
-        .pickerStyle(.segmented)
+        .modePickerStyle()
         .labelsHidden()
         .controlSize(.large)
         .frame(maxWidth: .infinity)
@@ -615,6 +616,18 @@ private struct SourceRow<Icon: View, Title: View, Subtitle: View>: View {
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+}
+
+private extension View {
+    /// The tabs picker style where the OS has it (macOS 27), segmented before that.
+    @ViewBuilder
+    func modePickerStyle() -> some View {
+        if #available(macOS 27.0, *) {
+            pickerStyle(.tabs)
+        } else {
+            pickerStyle(.segmented)
+        }
     }
 }
 #endif

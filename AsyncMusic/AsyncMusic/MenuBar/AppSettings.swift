@@ -18,7 +18,6 @@ final class AppSettings {
 
     static let deviceNameKey = "AppSettings.deviceName"
     private static let alertBehaviorKey = "AppSettings.alertBehavior"
-    private static let playsAlertSoundKey = "AppSettings.playsAlertSound"
 
     /// The name other devices see. Empty means the Mac's own name.
     var customDeviceName: String {
@@ -29,16 +28,12 @@ final class AppSettings {
         didSet { UserDefaults.standard.set(alertBehavior.rawValue, forKey: Self.alertBehaviorKey) }
     }
 
-    var playsAlertSound: Bool {
-        didSet { UserDefaults.standard.set(playsAlertSound, forKey: Self.playsAlertSoundKey) }
-    }
-
     private(set) var opensAtLogin = SMAppService.mainApp.status == .enabled
     private(set) var loginItemError: String?
 
     /// What the server needs to know.
     var service: ServiceSettings {
-        ServiceSettings(customDeviceName: customDeviceName, alertBehavior: alertBehavior, playsAlertSound: playsAlertSound)
+        ServiceSettings(customDeviceName: customDeviceName, alertBehavior: alertBehavior)
     }
 
     var deviceName: String { service.deviceName }
@@ -49,7 +44,6 @@ final class AppSettings {
         let defaults = UserDefaults.standard
         customDeviceName = defaults.string(forKey: Self.deviceNameKey) ?? ""
         alertBehavior = AlertBehavior(rawValue: defaults.string(forKey: Self.alertBehaviorKey) ?? "") ?? .showAlert
-        playsAlertSound = defaults.bool(forKey: Self.playsAlertSoundKey)
     }
 
     func setOpensAtLogin(_ enabled: Bool) {
