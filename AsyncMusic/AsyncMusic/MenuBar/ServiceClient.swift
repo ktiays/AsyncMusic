@@ -264,7 +264,8 @@ final class ServiceClient {
         send(.setPanelVisible(isPanelVisible))
     }
 
-    /// The server quit or crashed. launchd starts it again, and the next message reaches the new one.
+    /// The server quit, crashed or was killed. launchd doesn't restart it on its own, but its job is
+    /// still loaded, so the next message to its Mach service starts it again and reaches the new one.
     private func interrupted(_ connection: NSXPCConnection) {
         guard connection === self.connection else { return }
         log.info("The server went away")

@@ -11,7 +11,12 @@ import Foundation
 /// The job is loaded from a plist written for the occasion and removed right after, so it lasts
 /// until the user logs out or the app unloads it, and isn't a background item the system keeps
 /// starting (or tells the user about). Being launchd's own job, the server isn't the app's child:
-/// it keeps running when the app quits, and launchd restarts it if it crashes.
+/// it keeps running when the app quits.
+///
+/// launchd doesn't start it again once it exits, however it exits: it can't tell a crash from
+/// the user quitting or force quitting it in Activity Monitor, which has to stick. While the job
+/// is loaded, a message to its Mach service starts it again, so the app, when it's open, brings it
+/// back by reconnecting; otherwise it stays off until the app opens or the user logs in again.
 ///
 /// These calls run `launchctl` and wait for it, so keep them off the main thread.
 nonisolated enum ServiceLauncher {
@@ -38,8 +43,6 @@ nonisolated enum ServiceLauncher {
             "ProgramArguments": [executable.path],
             "MachServices": [AsyncMusicService.machServiceName: true],
             "RunAtLoad": true,
-            // Restarted after a crash, not after quitting on purpose.
-            "KeepAlive": ["SuccessfulExit": false],
             "LimitLoadToSessionType": "Aqua",
             // It plays and captures audio in real time.
             "ProcessType": "Interactive",
