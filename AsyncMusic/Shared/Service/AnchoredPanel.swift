@@ -8,7 +8,8 @@ import AppKit
 import SwiftUI
 
 /// A borderless panel that stays put relative to `anchor` whatever size its content asks for:
-/// hanging from a point (under the menu bar icon) or centered on one.
+/// hanging from a point (under the menu bar icon) or centered on one. AsyncMusic Server shows its
+/// share alerts in one.
 final class AnchoredPanel: NSPanel {
     enum Anchor {
         /// The top-left corner stays here; the panel grows down.
@@ -17,56 +18,30 @@ final class AnchoredPanel: NSPanel {
         case center(NSPoint)
     }
 
-    enum Background {
-        /// A transparent window; the content draws its own shapes and shadows inside a margin.
-        case none
-        /// The window is a glass pane with rounded corners and the system's window shadow, and
-        /// animates to each new size the content asks for.
-        case glass(cornerRadius: CGFloat)
-    }
-
-    /// The content's width; a transparent window adds the shadow margin.
+    /// The content's width; the window adds the shadow margin.
     static let contentWidth: CGFloat = 340
 
-    /// Room around the content of a transparent window for the shadows it draws, which the
-    /// window would otherwise clip. A glass window has the system's shadow and needs none.
-    let margin: CGFloat
+    /// Room around the content for the shadows it draws, which the window would otherwise clip.
+    let margin: CGFloat = 14
     var width: CGFloat { Self.contentWidth + 2 * margin }
 
     var anchor: Anchor?
     var onCancel: (() -> Void)?
     private let allowsKey: Bool
-    private let glassView: NSGlassEffectView?
-    private var hostingController: NSViewController?
 
-    init(canBecomeKey: Bool, background: Background = .none) {
+    init(canBecomeKey: Bool) {
         allowsKey = canBecomeKey
-        switch background {
-        case .none:
-            margin = 14
-            glassView = nil
-        case let .glass(cornerRadius):
-            margin = 0
-            let glass = NSGlassEffectView()
-            glass.cornerRadius = cornerRadius
-            glass.wantsLayer = true
-            glass.layer?.cornerRadius = cornerRadius
-            glass.layer?.cornerCurve = .continuous
-            glass.layer?.masksToBounds = true
-            glassView = glass
-        }
         super.init(contentRect: NSRect(x: 0, y: 0, width: Self.contentWidth + 2 * margin, height: 120), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
         isFloatingPanel = true
         level = .statusBar
         backgroundColor = .clear
         isOpaque = false
-        hasShadow = glassView != nil
+        hasShadow = false
         hidesOnDeactivate = false
         isMovable = false
         animationBehavior = .utilityWindow
         acceptsMouseMovedEvents = true
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient, .ignoresCycle]
-        if let glassView { contentView = glassView }
     }
 
     override var canBecomeKey: Bool { allowsKey }
@@ -74,90 +49,17 @@ final class AnchoredPanel: NSPanel {
 
     override func setFrame(_ frameRect: NSRect, display flag: Bool) {
         super.setFrame(anchored(frameRect), display: flag)
-        // The shadow follows the window's shape, which changes with its size.
-        if hasShadow { invalidateShadow() }
     }
 
     override func setFrame(_ frameRect: NSRect, display displayFlag: Bool, animate animateFlag: Bool) {
         super.setFrame(anchored(frameRect), display: displayFlag, animate: animateFlag)
-        if hasShadow { invalidateShadow() }
     }
 
-    /// Takes the size the content asked for, keeping the panel at its anchor. A glass window
-    /// animates to it: the glass is the window, so it grows and shrinks with the frame, and the
-    /// content is clipped to it on the way.
+    /// Takes the size the content asked for, keeping the panel at its anchor.
     func fit(_ size: CGSize) {
         let size = NSSize(width: ceil(size.width), height: ceil(size.height))
         guard size.width > 0, size.height > 0, size != frame.size else { return }
-        let target = NSRect(origin: frame.origin, size: size)
-        guard glassView != nil, isVisible else {
-            stopResizing()
-            setFrame(target, display: true)
-            return
-        }
-        // Stepped by the display link rather than `animator()`: the animator proxy would call
-        // the `setFrame` overrides with itself as `self`, reading `anchor` from the wrong object.
-        let now = CACurrentMediaTime()
-        // A new size mid-resize starts from where the window is, keeping its speed.
-        let speed = resize?.heightSpeed(at: now) ?? 0
-        let distance = size.height - frame.height
-        resize = Resize(from: frame.size, to: size, start: now,
-                        initialVelocity: abs(distance) < 1 ? 0 : speed / distance)
-        if resizeLink == nil {
-            let link = displayLink(target: self, selector: #selector(stepResize))
-            link.add(to: .main, forMode: .common)
-            resizeLink = link
-        }
-    }
-
-    /// The spring the window resizes on. Content changing with the size should animate on it
-    /// too (`.animation(.spring(AnchoredPanel.resizeSpring), value:)`), so the two move together.
-    static let resizeSpring = Spring(duration: 0.3, bounce: 0.1)
-
-    /// A resize from one size to another, as progress from 0 to 1 along `resizeSpring`.
-    private struct Resize {
-        var from: NSSize
-        var to: NSSize
-        var start: CFTimeInterval
-        /// In progress per second.
-        var initialVelocity: Double
-
-        func progress(at time: CFTimeInterval) -> Double {
-            AnchoredPanel.resizeSpring.value(target: 1.0, initialVelocity: initialVelocity, time: time - start)
-        }
-
-        func isSettled(at time: CFTimeInterval) -> Bool {
-            time - start >= AnchoredPanel.resizeSpring.settlingDuration
-        }
-
-        /// In points per second.
-        func heightSpeed(at time: CFTimeInterval) -> Double {
-            let velocity = AnchoredPanel.resizeSpring.velocity(target: 1.0, initialVelocity: initialVelocity, time: time - start)
-            return velocity * (to.height - from.height)
-        }
-
-        func size(at time: CFTimeInterval) -> NSSize {
-            let p = progress(at: time)
-            return NSSize(width: (from.width + (to.width - from.width) * p).rounded(),
-                          height: (from.height + (to.height - from.height) * p).rounded())
-        }
-    }
-
-    private var resize: Resize?
-    private var resizeLink: CADisplayLink?
-
-    @objc private func stepResize(_ link: CADisplayLink) {
-        guard let resize else { return stopResizing() }
-        let now = link.targetTimestamp
-        let settled = resize.isSettled(at: now)
-        setFrame(NSRect(origin: frame.origin, size: settled ? resize.to : resize.size(at: now)), display: true)
-        if settled { stopResizing() }
-    }
-
-    private func stopResizing() {
-        resize = nil
-        resizeLink?.invalidate()
-        resizeLink = nil
+        setFrame(NSRect(origin: frame.origin, size: size), display: true)
     }
 
     /// Moves the panel to `anchor` at its current size.
@@ -170,9 +72,8 @@ final class AnchoredPanel: NSPanel {
     /// it on the next turn of the run loop; resizing the window from inside SwiftUI's layout pass
     /// (what `sizingOptions` does) can recurse until the stack runs out.
     func host<Content: View>(@ViewBuilder _ content: () -> Content) {
-        // The content hangs from the top of a root exactly the window's size. As the root's
-        // content it would make the root as tall as itself, and the hosting view would center
-        // the root in a window still animating to that height, moving the content up and down.
+        // The content hangs from the top of a root exactly the window's size, so the hosting view
+        // doesn't center it in a window not yet at its height.
         let root = Color.clear.overlay(alignment: .top) {
             content()
                 .padding(margin)
@@ -185,14 +86,7 @@ final class AnchoredPanel: NSPanel {
         controller.sizingOptions = []
         controller.view.wantsLayer = true
         controller.view.layer?.backgroundColor = .clear
-        if let glassView {
-            // While the window animates smaller, content taller than it stays inside the glass.
-            controller.view.clipsToBounds = true
-            hostingController = controller
-            glassView.contentView = controller.view
-        } else {
-            contentViewController = controller
-        }
+        contentViewController = controller
     }
 
     /// Hanging from a menu bar icon at `iconFrame`, kept on its screen.

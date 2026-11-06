@@ -20,7 +20,7 @@ enum SettingsSectionID: Hashable {
     static let groups: [SettingsGroup<Self>] = [
         SettingsGroup(id: "app", sections: [
             SettingsSection("General", id: .general, systemImage: "gearshape", iconColor: .gray,
-                            keywords: ["Name", "Login", "Server", "Background", "Service"]),
+                            keywords: ["Name", "Login", "Server", "Background", "Service", "Menu Bar", "Dock", "Window"]),
             SettingsSection("Share Alerts", id: .alerts, systemImage: "bell.badge", iconColor: .red,
                             keywords: ["Notifications"]),
             SettingsSection("About", id: .about, systemImage: "info.circle", iconColor: .gray,
@@ -72,12 +72,16 @@ struct SettingsContent: View {
                 }
             }
             Section {
+                Toggle(isOn: $settings.showsMenuBarIcon) {
+                    Text("Show in Menu Bar")
+                    Text("AsyncMusic opens from its menu bar icon. Turned off, it opens in a window and stays in the Dock.")
+                }
                 Toggle("Open AsyncMusic at Login", isOn: Binding(get: { settings.opensAtLogin }, set: { settings.setOpensAtLogin($0) }))
+            } header: {
+                Text("App")
             } footer: {
                 if let error = settings.loginItemError {
                     Text(error).foregroundStyle(.red)
-                } else {
-                    Text("Shows the menu bar icon after you log in.")
                 }
             }
         case .alerts:
@@ -102,7 +106,7 @@ struct SettingsContent: View {
                     Button("Quit") { NSApp.terminate(nil) }
                 }
             } footer: {
-                Text("Quitting removes the menu bar icon. AsyncMusic Server keeps listening for shares until you log out, unless you turn it off in General.")
+                Text("Quitting closes AsyncMusic. AsyncMusic Server keeps listening for shares until you log out, unless you turn it off in General.")
             }
         }
     }

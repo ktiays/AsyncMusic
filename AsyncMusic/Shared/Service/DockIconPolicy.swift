@@ -9,6 +9,15 @@ import AppKit
 /// Keeps an `LSUIElement` app out of the Dock except while one of its ordinary windows, such as
 /// Settings or Diagnostics, is open, so the window can be found in the Dock and the app switcher.
 final class DockIconPolicy {
+    /// Keeps the app in the Dock with no window open, for an app that has no menu bar icon to be
+    /// found by.
+    var keepsDockIcon = false {
+        didSet {
+            guard keepsDockIcon != oldValue else { return }
+            update(closing: nil)
+        }
+    }
+
     private var observers: [NSObjectProtocol] = []
 
     func start() {
@@ -23,7 +32,7 @@ final class DockIconPolicy {
     }
 
     private func update(closing: NSWindow?) {
-        let hasWindow = NSApp.windows.contains { window in
+        let hasWindow = keepsDockIcon || NSApp.windows.contains { window in
             window !== closing && Self.showsDockIcon(for: window) && (window.isVisible || window.isMiniaturized)
         }
         let policy: NSApplication.ActivationPolicy = hasWindow ? .regular : .accessory

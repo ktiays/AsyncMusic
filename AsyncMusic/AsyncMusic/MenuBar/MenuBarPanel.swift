@@ -7,8 +7,7 @@
 import AppKit
 import SwiftUI
 
-/// The floating window under the menu bar icon: listen for shares and join one, or share this
-/// Mac's audio. AsyncMusic Server does the work; the panel shows its state and sends it what the
+/// The menu under the menu bar icon: listen for shares and join one, or share this Mac's audio. AsyncMusic Server does the work; the panel shows its state and sends it what the
 /// user does.
 struct MenuBarPanel: View {
     let client: ServiceClient
@@ -44,8 +43,20 @@ struct MenuBarPanel: View {
             }
         }
         .frame(width: 340)
-        // Crossfades the sections; the panel animates the window to the new height.
-        .animation(.spring(AnchoredPanel.resizeSpring), value: client.state.mode)
+        // The sections crossfade on the spring the panel's glass resizes on. Changes the server
+        // sends aren't animated by themselves.
+        .animation(.spring(MenuPanelItemView.spring), value: layoutKey)
+    }
+
+    /// What changes the panel's shape; not things like the volume, which would lag behind a drag.
+    private var layoutKey: [AnyHashable] {
+        let state = client.state
+        return [
+            client.isRunning, String(describing: client.status), state.mode, state.isSharing,
+            state.joined?.id, state.nearbyOthers.map(\.id), state.listeners.map(\.id),
+            state.applications.map(\.id), state.shareSource?.name, state.syncStatus.map { String(describing: $0) },
+            state.isLocalNetworkDenied, state.discoveryError, pendingMode,
+        ]
     }
 
     private var header: some View {
@@ -216,7 +227,7 @@ private struct JoinedCard: View {
     }
 }
 
-private struct SyncLabel: View {
+struct SyncLabel: View {
     let status: SyncStatus?
 
     var body: some View {
@@ -253,6 +264,7 @@ private struct ShareSection: View {
 
 private struct ShareSetup: View {
     let client: ServiceClient
+    @Environment(\.dismissMenuBarPanel) private var dismissPanel
 
     var body: some View {
         let state = client.state
@@ -295,6 +307,8 @@ private struct ShareSetup: View {
                 } subtitle: {
                     EmptyView()
                 } action: {
+                    // The server's open panel can't come up over an open menu.
+                    dismissPanel()
                     client.chooseFile()
                 }
                 .padding(4)
@@ -315,8 +329,15 @@ private struct ShareSetup: View {
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity)
         }
-        .task {
-            // The server lists the apps, from its side of the sandbox.
+        .refreshesApplications(client)
+    }
+}
+
+extension View {
+    /// Keeps the server's list of apps playing audio fresh while the view is shown. The server
+    /// lists them, from its side of the sandbox.
+    func refreshesApplications(_ client: ServiceClient) -> some View {
+        task {
             while !Task.isCancelled {
                 client.refreshApplications()
                 do { try await Task.sleep(for: .seconds(2)) } catch { return }
@@ -404,21 +425,24 @@ private struct ModeSwitchConfirmation: View {
     let mode: ShareMode
     var dismiss: () -> Void
 
+    private var prompt: ModeSwitchPrompt { ModeSwitchPrompt(mode: mode, state: client.state) }
+
     var body: some View {
+        let prompt = prompt
         ZStack {
             Rectangle().fill(.black.opacity(0.18)).onTapGesture(perform: dismiss)
             VStack(spacing: 12) {
                 Image(systemName: mode == .share ? "dot.radiowaves.left.and.right" : "ear")
                     .font(.title2)
                     .foregroundStyle(mode == .share ? .orange : .accentColor)
-                Text(title).font(.headline).multilineTextAlignment(.center)
-                Text(message).font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                Text(prompt.title).font(.headline).multilineTextAlignment(.center)
+                Text(prompt.message).font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
                 HStack {
-                    Button(keepTitle, action: dismiss)
+                    Button(prompt.keepTitle, action: dismiss)
                         .keyboardShortcut(.cancelAction)
                         .frame(maxWidth: .infinity)
-                    Button(switchTitle) {
+                    Button(prompt.switchTitle) {
                         client.setMode(mode)
                         dismiss()
                     }
@@ -434,23 +458,30 @@ private struct ModeSwitchConfirmation: View {
             .glassEffect(.regular, in: .rect(cornerRadius: 18))
             .padding(18)
         }
-        .clipShape(.rect(cornerRadius: 22))
+        .clipShape(.rect(cornerRadius: 12))
     }
 
-    private var title: String {
+}
+
+/// What to ask before a mode switch that ends a share being listened to or given.
+struct ModeSwitchPrompt {
+    let mode: ShareMode
+    let state: ServerState
+
+    var title: String {
         mode == .share ? "Start sharing from this Mac?" : "Stop sharing?"
     }
 
-    private var message: String {
+    var message: String {
         if mode == .share {
-            return "You’ll stop listening to \(client.state.joined?.name ?? "the share"). A Mac either listens or shares, not both at once."
+            return "You’ll stop listening to \(state.joined?.name ?? "the share"). A Mac either listens or shares, not both at once."
         }
-        let count = client.state.listeners.count
+        let count = state.listeners.count
         return count == 0 ? "Listening ends this share." : "\(count) \(count == 1 ? "device" : "devices") listening to you will be disconnected."
     }
 
-    private var keepTitle: String { mode == .share ? "Keep Listening" : "Keep Sharing" }
-    private var switchTitle: String { mode == .share ? "Leave and Share" : "Stop and Listen" }
+    var keepTitle: String { mode == .share ? "Keep Listening" : "Keep Sharing" }
+    var switchTitle: String { mode == .share ? "Leave and Share" : "Stop and Listen" }
 }
 
 // MARK: - Service
@@ -510,7 +541,7 @@ private struct ServiceUnavailable: View {
 
 // MARK: - Problems
 
-private struct NetworkProblems: View {
+struct NetworkProblems: View {
     let state: ServerState
 
     var body: some View {
@@ -522,7 +553,7 @@ private struct NetworkProblems: View {
     }
 }
 
-private struct Notice: View {
+struct Notice: View {
     let systemImage: String
     let text: String
 
@@ -540,6 +571,11 @@ private struct Notice: View {
 }
 
 // MARK: - Building blocks
+
+extension EnvironmentValues {
+    /// Closes the menu the panel is in, before something else needs the screen.
+    @Entry var dismissMenuBarPanel: () -> Void = {}
+}
 
 /// A titled group of rows, like a grouped form section.
 struct PanelSection<Content: View>: View {

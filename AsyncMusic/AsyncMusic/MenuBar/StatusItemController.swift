@@ -8,41 +8,81 @@ import AppKit
 import Observation
 import SwiftUI
 
-/// Owns the menu bar icon and the panel hanging from it, a borderless glass panel kept just
-/// under the icon, its top edge fixed while SwiftUI changes its height.
+/// Owns the menu bar icon and its menu: an `NSMenu` whose only item is the panel
+/// (`MenuPanelItemView`), so opening, closing, tracking, keyboard and Space handling are the
+/// system's own.
 ///
 /// Alerts for new shares are AsyncMusic Server's, so they also appear when the app isn't
 /// running; the controller tells the server where the icon is, so they can point at it, and
 /// when the panel is open, which lists new shares in their place.
-final class StatusItemController: NSObject {
+///
+/// The icon can be hidden (`isVisible`), for an app that runs as an ordinary windowed app; the
+/// user can also ⌘-drag it out of the menu bar, which `onRemove` reports.
+final class StatusItemController: NSObject, NSMenuDelegate {
     let client: ServiceClient
+    /// The user dragged the icon out of the menu bar.
+    var onRemove: (() -> Void)?
 
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-    private lazy var panel: AnchoredPanel = {
-        let panel = AnchoredPanel(canBecomeKey: true, background: .glass(cornerRadius: 22))
-        panel.host {
-            MenuBarPanel(client: client, willOpenSettings: { [unowned self] in
-                closePanel()
-                // Activate first, so the window SwiftUI opens next comes to the front.
-                NSApp.activate()
-            })
-        }
-        panel.onCancel = { [weak self] in self?.closePanel() }
-        return panel
+    private lazy var panelView = MenuPanelItemView(width: Self.panelWidth) {
+        MenuBarPanel(client: client, willOpenSettings: { [unowned self] in
+            closePanel()
+            // Activate first, so the window SwiftUI opens next comes to the front.
+            NSApp.activate()
+        })
+        .environment(\.dismissMenuBarPanel, { [unowned self] in closePanel() })
+        // A menu's controls look active, as the menu has the keyboard, though the app isn't.
+        .environment(\.controlActiveState, .key)
+    }
+    private lazy var menu: NSMenu = {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        menu.delegate = self
+        let item = NSMenuItem()
+        item.view = panelView
+        menu.addItem(item)
+        return menu
     }()
-    private var outsideClickMonitor: Any?
+    private static let panelWidth: CGFloat = 340
+    private var isPanelOpen = false
     private var iconObservers: [NSObjectProtocol] = []
+    private var visibilityObservation: NSKeyValueObservation?
 
     init(client: ServiceClient) {
         self.client = client
         super.init()
-        if let button = statusItem.button {
-            button.target = self
-            button.action = #selector(togglePanel)
-            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
-        }
+        statusItem.menu = menu
+        statusItem.behavior = .removalAllowed
         observe()
         observeIconFrame()
+        visibilityObservation = statusItem.observe(\.isVisible) { [weak self] item, _ in
+            let isVisible = item.isVisible
+            DispatchQueue.main.async { self?.visibilityChanged(isVisible) }
+        }
+    }
+
+    /// Whether the app wants the icon shown; the icon going away while it does means the user
+    /// dragged it out.
+    private var wantsVisible = true
+
+    var isVisible: Bool {
+        get { wantsVisible }
+        set {
+            wantsVisible = newValue
+            if !newValue { closePanel() }
+            // AppKit saves the item's visibility and restores it at launch, so the item may start
+            // out hidden whatever `wantsVisible` said.
+            if statusItem.isVisible != newValue { statusItem.isVisible = newValue }
+        }
+    }
+
+    private func visibilityChanged(_ isVisible: Bool) {
+        // The icon's window is laid out after this turn of the run loop.
+        DispatchQueue.main.async { [weak self] in self?.reportIconFrame() }
+        guard !isVisible, wantsVisible else { return }
+        wantsVisible = false
+        closePanel()
+        onRemove?()
     }
 
     // MARK: - Icon
@@ -89,46 +129,37 @@ final class StatusItemController: NSObject {
         client.setStatusItemFrame(statusItem.button?.window?.isVisible == true ? iconFrame : nil)
     }
 
-    // MARK: - Panel
+    // MARK: - Menu
 
-    @objc private func togglePanel() {
-        if panel.isVisible {
-            closePanel()
-        } else {
-            openPanel()
-        }
-    }
-
+    /// Opens the menu as if the icon were clicked. From macOS 27 the menu bar opens it: the
+    /// status item asks it to start navigating to the item
+    /// (`-[NSSceneStatusItem _requestExpandedInterfaceSession]`, private), as a click would;
+    /// a click on the button from code doesn't reach it.
     func openPanel() {
-        client.setPanelVisible(true)
-        reportIconFrame()
-        if let iconFrame { panel.place(at: panel.anchor(below: iconFrame)) }
-        NSApp.activate()
-        panel.makeKeyAndOrderFront(nil)
-        statusItem.button?.highlight(true)
-        installOutsideClickMonitor()
+        guard wantsVisible, !isPanelOpen else { return }
+        let request = NSSelectorFromString("_requestExpandedInterfaceSession")
+        if statusItem.responds(to: request) {
+            statusItem.perform(request)
+        } else {
+            statusItem.button?.performClick(nil)
+        }
     }
 
     private func closePanel() {
-        panel.orderOut(nil)
-        statusItem.button?.highlight(false)
+        guard isPanelOpen else { return }
+        menu.cancelTracking()
+    }
+
+    func menuWillOpen(_ menu: NSMenu) {
+        isPanelOpen = true
+        panelView.sizeToFitContent()
+        client.setPanelVisible(true)
+        reportIconFrame()
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        isPanelOpen = false
         client.setPanelVisible(false)
-        removeOutsideClickMonitor()
-    }
-
-    private func installOutsideClickMonitor() {
-        // `-KeepPanelOpen YES` leaves the panel open on outside clicks, for checking it while developing.
-        guard outsideClickMonitor == nil, !UserDefaults.standard.bool(forKey: "KeepPanelOpen") else { return }
-        outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
-            guard let self, panel.isVisible else { return }
-            closePanel()
-        }
-    }
-
-    private func removeOutsideClickMonitor() {
-        guard let outsideClickMonitor else { return }
-        NSEvent.removeMonitor(outsideClickMonitor)
-        self.outsideClickMonitor = nil
     }
 
     func openDiagnostics() {

@@ -18,6 +18,7 @@ final class AppSettings {
 
     static let deviceNameKey = "AppSettings.deviceName"
     private static let alertBehaviorKey = "AppSettings.alertBehavior"
+    private static let showsMenuBarIconKey = "AppSettings.showsMenuBarIcon"
 
     /// The name other devices see. Empty means the Mac's own name.
     var customDeviceName: String {
@@ -26,6 +27,12 @@ final class AppSettings {
 
     var alertBehavior: AlertBehavior {
         didSet { UserDefaults.standard.set(alertBehavior.rawValue, forKey: Self.alertBehaviorKey) }
+    }
+
+    /// Whether the app lives in the menu bar, its window a panel hanging from the icon. Without
+    /// the icon it is an ordinary app: a titled main window and a Dock icon. On at first.
+    var showsMenuBarIcon: Bool {
+        didSet { UserDefaults.standard.set(showsMenuBarIcon, forKey: Self.showsMenuBarIconKey) }
     }
 
     private(set) var opensAtLogin = SMAppService.mainApp.status == .enabled
@@ -44,6 +51,8 @@ final class AppSettings {
         let defaults = UserDefaults.standard
         customDeviceName = defaults.string(forKey: Self.deviceNameKey) ?? ""
         alertBehavior = AlertBehavior(rawValue: defaults.string(forKey: Self.alertBehaviorKey) ?? "") ?? .showAlert
+        defaults.register(defaults: [Self.showsMenuBarIconKey: true])
+        showsMenuBarIcon = defaults.bool(forKey: Self.showsMenuBarIconKey)
     }
 
     func setOpensAtLogin(_ enabled: Bool) {
