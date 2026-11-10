@@ -59,6 +59,7 @@ struct MenuBarPanel: View {
         ]
     }
 
+    @ContentBuilder
     private var header: some View {
         HStack(spacing: 10) {
             AppGlyph(size: 32)
@@ -79,15 +80,23 @@ struct MenuBarPanel: View {
         }
     }
 
+    @ContentBuilder
     private var modePicker: some View {
-        Picker("Mode", selection: Binding(get: { client.state.mode }, set: requestMode)) {
-            ForEach(ShareMode.allCases) { mode in
-                Text(mode.rawValue).tag(mode)
+        Group {
+            if #available(macOS 27.0, *) {
+                ModeTabs(selection: client.state.mode, select: requestMode)
+                    .fixedSize()
+            } else {
+                Picker("Mode", selection: Binding(get: { client.state.mode }, set: requestMode)) {
+                    ForEach(ShareMode.allCases) { mode in
+                        Text(mode.rawValue).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .controlSize(.large)
             }
         }
-        .modePickerStyle()
-        .labelsHidden()
-        .controlSize(.large)
         .frame(maxWidth: .infinity)
     }
 
@@ -655,14 +664,45 @@ private struct SourceRow<Icon: View, Title: View, Subtitle: View>: View {
     }
 }
 
-private extension View {
-    /// The tabs picker style where the OS has it (macOS 27), segmented before that.
-    @ViewBuilder
-    func modePickerStyle() -> some View {
-        if #available(macOS 27.0, *) {
-            pickerStyle(.tabs)
-        } else {
-            pickerStyle(.segmented)
+/// The mode tabs, as AppKit's own tabs segmented control.
+///
+/// SwiftUI's tabs picker wraps the same control, but inside the menu its press animation (the
+/// glass lifting and settling back) is cut short when the selection changes on release. This
+/// control is only told the selection when it differs from what it shows.
+@available(macOS 27.0, *)
+private struct ModeTabs: NSViewRepresentable {
+    var selection: ShareMode
+    var select: (ShareMode) -> Void
+
+    private static let modes = ShareMode.allCases
+
+    func makeNSView(context: Context) -> NSSegmentedControl {
+        let control = NSSegmentedControl(
+            labels: Self.modes.map(\.rawValue), trackingMode: .selectOne,
+            target: context.coordinator, action: #selector(Coordinator.didSelect(_:)))
+        control.role = .tabs
+        control.controlSize = .large
+        control.borderShape = .capsule
+        control.setAccessibilityLabel("Mode")
+        return control
+    }
+
+    func updateNSView(_ control: NSSegmentedControl, context: Context) {
+        context.coordinator.select = select
+        let index = Self.modes.firstIndex(of: selection) ?? -1
+        if control.selectedSegment != index { control.selectedSegment = index }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(select: select) }
+
+    final class Coordinator: NSObject {
+        var select: (ShareMode) -> Void
+
+        init(select: @escaping (ShareMode) -> Void) { self.select = select }
+
+        @objc func didSelect(_ control: NSSegmentedControl) {
+            guard ModeTabs.modes.indices.contains(control.selectedSegment) else { return }
+            select(ModeTabs.modes[control.selectedSegment])
         }
     }
 }
