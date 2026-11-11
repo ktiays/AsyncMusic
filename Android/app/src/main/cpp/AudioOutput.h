@@ -64,6 +64,15 @@ public:
     void setManualOffset(double milliseconds);
     double manualOffset() const { return manualOffset_.load(); }
 
+    /// The output's gain, 0 (silent) to 1 (as rendered). Changes are smoothed over a buffer.
+    void setVolume(float volume);
+    float volume() const { return volume_.load(); }
+
+    /// Silences the output while the renderer keeps to its schedule, so unmuting picks up in
+    /// step with everyone else ("paused here").
+    void setMuted(bool muted) { muted_ = muted; }
+    bool isMuted() const { return muted_.load(); }
+
     Status status() const;
 
 private:
@@ -90,6 +99,8 @@ private:
     std::atomic<bool> stopping_{false};
     std::atomic<bool> disconnected_{false};
     std::atomic<double> manualOffset_{0};
+    std::atomic<float> volume_{1};
+    std::atomic<bool> muted_{false};
     std::mutex wakeMutex_;
     std::condition_variable wake_;
 
@@ -105,6 +116,8 @@ private:
     static constexpr int kChunkFrames = 2048;
     double sampleRate_ = 0;
     int64_t framesRendered_ = 0;
+    /// The gain applied to the last frame, ramped towards the square of `volume_`.
+    float appliedGain_ = 1;
     float left_[kChunkFrames] = {};
     float right_[kChunkFrames] = {};
 

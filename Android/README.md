@@ -1,15 +1,16 @@
 # AsyncMusic for Android
 
-A Jetpack Compose app in Kotlin on top of the portable core (`../Core`), which it links
-through JNI. It hosts a group (plays a file on every device that joins, as a stereo pair if you
-like) or joins one hosted on another Android device, a Windows PC, a Mac, an iPhone or an iPad
-as a speaker. Android 9 (API 28) or later.
+A Jetpack Compose app in Kotlin (Material 3 Expressive) on top of the portable core
+(`../Core`), which it links through JNI. Like the other apps it either **listens** — hears
+shares announced on the network, alerts you to new ones and joins one, playing the left or right
+side of a stereo pair if you like — or **shares** an audio file with every device that joins.
+Android 9 (API 28) or later.
 
 | Path | What it is |
 |---|---|
-| `app/src/main/cpp/` | The native half: AAudio output (`AudioOutput`), NDK media decoding (`MediaLoader`), `Engine`, which ties them to Core's `GroupSession`, and the JNI bridge (`Jni.cpp`), which hands snapshots over as JSON |
-| `app/src/main/java/.../engine/` | The Kotlin half of the engine: mDNS discovery and advertising with `NsdManager` (`LeaderBrowser`, `LeaderAdvertiser`), settings, `GroupController` (the process-wide owner of everything, which also holds the wake and Wi-Fi locks) and `PlaybackService`, the foreground service that keeps a group playing in the background |
-| `app/src/main/java/.../ui/` | The screens: welcome, host, speaker (nearby hosts, then what this device plays) and diagnostics |
+| `app/src/main/cpp/` | The native half: AAudio output (`AudioOutput`, with the output volume and "pause here"), NDK media decoding (`MediaLoader`), `Engine`, which ties them to Core's `GroupSession` and `ShareCenter` (the Listen/Share model, with share discovery by UDP broadcast), and the JNI bridge (`Jni.cpp`), which hands state over as JSON |
+| `app/src/main/java/.../engine/` | The Kotlin half of the engine: settings, `GroupController` (the process-wide owner of everything, which also holds the wake, Wi-Fi and multicast locks), `PlaybackService`, the foreground service that keeps listening or sharing going in the background (and takes a share notification's Join), and `ShareNotifications` |
+| `app/src/main/java/.../ui/` | The screens: Listen (a radar of shares nearby, or the share joined), Share (choosing a file, then the share under way), the mode in a floating toolbar, share alerts, Settings (name, alerts, join by address) and Diagnostics |
 
 ## Building
 
@@ -36,23 +37,31 @@ or open this folder in Android Studio.
 - **Files** are copied into the app's storage when chosen (hashing them on the way, for the ID
   every device agrees on), then read with `AMediaExtractor` and `AMediaCodec`: MP3, AAC, FLAC,
   Opus, Vorbis, WAV and whatever else the device decodes. They are streamed to followers as
-  ALAC. Opening an audio file with AsyncMusic starts hosting with it chosen.
-- **Staying alive.** While part of a group the app runs a media playback foreground service
-  (with a notification to leave), holds a partial wake lock and a low-latency Wi-Fi lock, which
-  keeps the radio out of power save; otherwise clock probes pick up tens of milliseconds of
-  jitter.
-- **Finding each other.** `NsdManager` browses for and advertises `_asyncmusic._udp`. For
-  networks that keep devices from seeing each other, the speaker screen can also join a host
-  by address and clock port (shown in the host's diagnostics).
+  ALAC. Opening an audio file with AsyncMusic switches to Share with it chosen.
+- **Staying alive.** While listening to a share or sharing, the app runs a media playback
+  foreground service (with a notification to leave or stop), holds a partial wake lock and a
+  low-latency Wi-Fi lock, which keeps the radio out of power save; otherwise clock probes pick up
+  tens of milliseconds of jitter.
+- **Finding each other.** Core's `ShareDiscovery` broadcasts and hears share announcements on
+  UDP 41750; the app holds a multicast lock while it listens, since many devices filter
+  broadcasts otherwise. A new share raises an alert in the app, or a notification with Join
+  while the app is in the background. Android 15+ cuts a backgrounded app off the network unless
+  it runs a foreground service, so in the background new shares are only heard while listening
+  or sharing. For networks that keep devices apart, Settings can join a share by address and
+  clock port.
 
 ## Testing with the emulator
 
-The emulator sits behind its own NAT, so mDNS does not reach it and it cannot be found by
-other devices, but it can still join a host on the Mac or host one:
+The emulator sits behind its own NAT, so broadcasts do not reach it and it cannot be found by
+other devices, but it can still listen to a share on the Mac or share one:
 
-- **As a speaker:** run `Core/build/test_host some.wav` on the Mac and join by address
-  `10.0.2.2` and the port it prints.
-- **As a host:** find the app's UDP clock port (diagnostics) and its TCP stream port
+- **As a listener:** run `Core/build/test_host some.wav` on the Mac and join by address
+  `10.0.2.2:<the port it prints>` in Settings. To see it as a share instead, forward
+  announcements: `adb emu redir add udp:41751:41750`, relay UDP 41750 on the Mac to
+  `127.0.0.1:41751` (a socket bound with `SO_REUSEPORT` hears the broadcasts), and run
+  `Core/build/share_beacon share "Name" --clock-port <that port>`; joining it then follows the
+  test host at `10.0.2.2`.
+- **Sharing:** find the app's UDP clock port (diagnostics) and its TCP stream port
   (`adb shell cat /proc/net/tcp6`, the listening socket of the app's uid), forward both with
   `adb emu redir add udp:<port>:<port>` and `tcp:<port>:<port>`, and follow it with
   `Core/build/test_follower 127.0.0.1 <port>`. The emulator answers redirected UDP from

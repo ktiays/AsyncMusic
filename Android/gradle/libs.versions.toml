@@ -2,14 +2,17 @@
 agp = "9.2.1"
 kotlin = "2.4.21"
 activityCompose = "1.12.4"
-composeBom = "2026.03.01"
+composeBom = "2026.06.01"
+# The Expressive components (ButtonGroup, ToggleButton, LoadingIndicator, FlexibleTopAppBar) are
+# only in 1.5 pre-releases; alpha18 is the last that builds with compileSdk 36 (alpha19+ need 37).
+material3 = "1.5.0-alpha18"
 coreKtx = "1.17.0"
 lifecycle = "2.10.0"
 
 [libraries]
 androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
 androidx-compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
-androidx-compose-material3 = { group = "androidx.compose.material3", name = "material3" }
+androidx-compose-material3 = { group = "androidx.compose.material3", name = "material3", version.ref = "material3" }
 androidx-compose-material-icons = { group = "androidx.compose.material", name = "material-icons-extended" }
 androidx-compose-ui = { group = "androidx.compose.ui", name = "ui" }
 androidx-compose-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }

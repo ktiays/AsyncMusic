@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">AsyncMusic</string>
-    <string name="notification_channel">Playing in a group</string>
+    <string name="notification_channel">Listening and sharing</string>
+    <string name="share_notification_channel">Shares</string>
+    <string name="share_notification_channel_description">When someone on your network starts sharing audio</string>
 </resources>

@@ -68,6 +68,149 @@ data class Round(
 
 data class LogLine(val date: Long, val text: String)
 
+/** Whether this device listens for shares or shares its own audio; it does one or the other. */
+enum class ShareMode(val title: String) {
+    Listen("Listen"),
+    Share("Share"),
+}
+
+/** Matches `asyncmusic::ShareSourceKind`: what kind of audio a share plays. */
+enum class ShareSourceKind(val raw: Int) {
+    Unknown(0),
+    Application(1),
+    File(2),
+    System(3);
+
+    companion object {
+        fun of(raw: Int) = entries.firstOrNull { it.raw == raw } ?: Unknown
+    }
+}
+
+/** Matches `asyncmusic::ShareDeviceKind`: what kind of device shares. */
+enum class ShareDeviceKind(val raw: Int) {
+    Unknown(0),
+    Laptop(1),
+    Desktop(2),
+    Phone(3),
+    Tablet(4);
+
+    companion object {
+        fun of(raw: Int) = entries.firstOrNull { it.raw == raw } ?: Unknown
+    }
+}
+
+/** How a joined share's clock sync is going. */
+enum class SyncStatus { Connecting, Syncing, Reconnecting, Failed }
+
+/** A share heard on the network (`ShareCenter::Share`). */
+data class NearbyShare(
+    /** A new ID each time the device starts sharing; 0 for a share joined by address. */
+    val id: Long,
+    val device: Long,
+    val name: String,
+    val source: String,
+    val sourceKind: ShareSourceKind,
+    val deviceKind: ShareDeviceKind,
+    val model: String,
+    val listenerCount: Int,
+    /** Where its clock leader is, "host:port". */
+    val address: String,
+    /** "Music · 2 listening": what it plays and how many listen. */
+    val summary: String,
+) {
+    companion object {
+        fun parse(json: JSONObject) = NearbyShare(
+            id = json.getString("id").toID(),
+            device = json.getString("device").toID(),
+            name = json.getString("name"),
+            source = json.getString("source"),
+            sourceKind = ShareSourceKind.of(json.getInt("sourceKind")),
+            deviceKind = ShareDeviceKind.of(json.getInt("deviceKind")),
+            model = json.getString("model"),
+            listenerCount = json.getInt("listenerCount"),
+            address = json.getString("address"),
+            summary = json.getString("summary"),
+        )
+
+        fun parse(text: String) = parse(JSONObject(text))
+    }
+}
+
+/** A device listening to this device's share. */
+data class ShareListener(val id: Long, val name: String, val channel: SpeakerChannel?)
+
+/** What this device shares. */
+data class ShareSource(val name: String, val kind: ShareSourceKind = ShareSourceKind.File)
+
+/** The Listen/Share model (`ShareCenter::State`), as `Engine::stateJSON` writes it. */
+data class ShareState(
+    val mode: ShareMode = ShareMode.Listen,
+    val deviceName: String = "",
+    /** Every share heard, including the one joined. */
+    val nearby: List<NearbyShare> = emptyList(),
+    /** New shares waiting for an answer, newest first. */
+    val alerts: List<NearbyShare> = emptyList(),
+    val hasUnseenShares: Boolean = false,
+    val discoveryError: String? = null,
+    // Listening
+    val joined: NearbyShare? = null,
+    val isPlaying: Boolean = false,
+    /** What this device plays of the joined share. */
+    val channel: SpeakerChannel = SpeakerChannel.Full,
+    /** The joined share's layout: in a stereo pair, this device picks Left or Right. */
+    val joinedLayout: SpeakerLayout = SpeakerLayout.Everywhere,
+    val syncStatus: SyncStatus = SyncStatus.Connecting,
+    // Sharing
+    val source: ShareSource? = null,
+    val isSharing: Boolean = false,
+    /** Why sharing isn't playing yet ("Loading…"), or null when it is. */
+    val shareProblem: String? = null,
+    val layout: SpeakerLayout = SpeakerLayout.Everywhere,
+    val listeners: List<ShareListener> = emptyList(),
+    val revision: Long = 0,
+) {
+    /** The shares nearby other than the one joined. */
+    val nearbyOthers: List<NearbyShare> get() = nearby.filter { it.id != joined?.id }
+
+    /** Whether this device is in a group, listening or sharing. */
+    val isActive: Boolean get() = joined != null || isSharing
+
+    /** Whether switching to [mode] would cut a connection, so the user should confirm. */
+    fun switchInterrupts(mode: ShareMode) = mode != this.mode && isActive
+
+    companion object {
+        fun parse(text: String): ShareState {
+            val json = JSONObject(text)
+            return ShareState(
+                mode = if (json.getString("mode") == "share") ShareMode.Share else ShareMode.Listen,
+                deviceName = json.getString("deviceName"),
+                nearby = json.getJSONArray("nearby").objects().map(NearbyShare::parse),
+                alerts = json.getJSONArray("alerts").objects().map(NearbyShare::parse),
+                hasUnseenShares = json.getBoolean("hasUnseenShares"),
+                discoveryError = json.getString("discoveryError").ifEmpty { null },
+                joined = json.optJSONObject("joined")?.let(NearbyShare::parse),
+                isPlaying = json.getBoolean("isPlaying"),
+                channel = SpeakerChannel.of(json.getInt("channel")),
+                joinedLayout = SpeakerLayout.of(json.getInt("joinedLayout")),
+                syncStatus = when (json.getString("syncStatus")) {
+                    "syncing" -> SyncStatus.Syncing
+                    "reconnecting" -> SyncStatus.Reconnecting
+                    "failed" -> SyncStatus.Failed
+                    else -> SyncStatus.Connecting
+                },
+                source = json.optJSONObject("source")?.let { ShareSource(it.getString("name"), ShareSourceKind.of(it.getInt("kind"))) },
+                isSharing = json.getBoolean("isSharing"),
+                shareProblem = json.getString("shareProblem").ifEmpty { null },
+                layout = SpeakerLayout.of(json.getInt("layout")),
+                listeners = json.getJSONArray("listeners").objects().map {
+                    ShareListener(it.getString("id").toID(), it.getString("name"), if (it.isNull("channel")) null else SpeakerChannel.of(it.getInt("channel")))
+                },
+                revision = json.getLong("revision"),
+            )
+        }
+    }
+}
+
 /** `GroupSession::Snapshot`, as `Engine::snapshotJSON` writes it. */
 data class Snapshot(
     val role: Role = Role.Off,

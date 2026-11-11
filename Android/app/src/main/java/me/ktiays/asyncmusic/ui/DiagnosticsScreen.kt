@@ -69,8 +69,8 @@ interface DiagnosticsActions {
 fun DiagnosticsScreen(
     state: Snapshot,
     live: Live,
-    discoveredHosts: Int,
-    advertisingError: String?,
+    sharesNearby: Int,
+    discoveryError: String?,
     customName: String,
     actions: DiagnosticsActions,
 ) {
@@ -88,14 +88,14 @@ fun DiagnosticsScreen(
                 LabeledRow("Followers", state.followerCount.toString())
                 LabeledRow("Members", state.members.joinToString("\n") { it.name + if (it.isActive) "" else " (not responding)" }.ifEmpty { "–" })
                 LabeledRow("Clock port (UDP)", if (state.leaderPort != 0) state.leaderPort.toString() else "–")
-                LabeledRow("Advertising", advertisingError ?: if (state.leaderPort != 0) "As “${state.identity.name}”" else "–")
+                LabeledRow("Announcing", discoveryError ?: if (state.leaderPort != 0) "As “${state.identity.name}”" else "–")
             }
         }
 
         if (state.role == Role.Follower) {
             SectionCard("Clock") {
                 LabeledRow("Connected to", state.connectedLeader ?: "–")
-                LabeledRow("Discovered hosts", discoveredHosts.toString())
+                LabeledRow("Shares nearby", sharesNearby.toString())
                 val round = state.latestRound
                 LabeledRow("Offset", round?.offset?.let { "%.3f ms".format(it / 1e6) } ?: "–")
                 LabeledRow("Skew", round?.skewPPM?.let { "%+.2f ppm".format(it) } ?: "–")
@@ -290,7 +290,7 @@ fun layoutTitle(layout: SpeakerLayout) = when (layout) {
 }
 
 fun channelTitle(channel: SpeakerChannel) = when (channel) {
-    SpeakerChannel.Full -> "Full Mix"
+    SpeakerChannel.Full -> "Both Channels"
     SpeakerChannel.Left -> "Left"
     SpeakerChannel.Right -> "Right"
 }

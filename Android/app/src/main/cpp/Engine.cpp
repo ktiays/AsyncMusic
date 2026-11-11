@@ -107,24 +107,71 @@ void writeLeaderClock(JsonWriter& json, const std::optional<ClockMap>& map) {
     if (map) json.value(map->leaderTimeFromLocal(hostClockNanoseconds())); else json.null();
 }
 
+const char* syncStatusName(ShareCenter::SyncStatus status) {
+    switch (status) {
+    case ShareCenter::SyncStatus::connecting: return "connecting";
+    case ShareCenter::SyncStatus::syncing: return "syncing";
+    case ShareCenter::SyncStatus::reconnecting: return "reconnecting";
+    case ShareCenter::SyncStatus::failed: return "failed";
+    }
+    return "connecting";
+}
+
+void writeShare(JsonWriter& json, const ShareCenter::Share& share) {
+    json.beginObject();
+    json.key("id").id(share.id);
+    json.key("device").id(share.device);
+    json.key("name").value(share.info.name);
+    json.key("source").value(share.info.source);
+    json.key("sourceKind").value(static_cast<int>(share.info.sourceKind));
+    json.key("deviceKind").value(static_cast<int>(share.info.deviceKind));
+    json.key("model").value(share.info.model);
+    json.key("listenerCount").value(static_cast<int>(share.info.listenerCount));
+    json.key("address").value(share.address.toString());
+    json.key("summary").value(share.summary());
+    json.endObject();
+}
+
 }  // namespace
 
-Engine::Engine(DeviceIdentity identity, GroupSession::SpeakerSettings speakers, double manualOffset, Callbacks callbacks)
-    : callbacks_(std::move(callbacks)) {
-    session_ = std::make_unique<GroupSession>(std::move(identity), std::move(speakers));
+Engine::Engine(Options options, Callbacks callbacks) : callbacks_(std::move(callbacks)) {
+    session_ = std::make_unique<GroupSession>(std::move(options.identity), std::move(options.speakers));
     output_ = std::make_unique<AudioOutput>(session_->renderer());
-    output_->setManualOffset(manualOffset);
+    output_->setManualOffset(options.manualOffset);
+    output_->setVolume(options.volume);
     session_->onSpeakerSettingsChange = [this](const GroupSession::SpeakerSettings& settings) {
         if (callbacks_.onSpeakerSettingsChange) callbacks_.onSpeakerSettingsChange(settings);
     };
     session_->onChange = [this] {
         if (callbacks_.onChange) callbacks_.onChange();
     };
+
+    ShareCenter::Hooks hooks;
+    hooks.setRole = [this](GroupSession::Role role) { setRole(role); };
+    hooks.isLoadingSource = [this] { return isLoadingSource_.load(); };
+    hooks.sourceError = [this] {
+        std::lock_guard<std::mutex> lock(sourceMutex_);
+        return sourceError_;
+    };
+    center_ = std::make_unique<ShareCenter>(*session_, std::move(options.device), std::move(hooks));
+    // The center publishes its first state from its own thread as soon as it exists, which may
+    // be before these are set (see the note in the report on `ShareCenter`); `refresh` below
+    // publishes again once they are.
+    center_->onChange = [this] {
+        if (callbacks_.onChange) callbacks_.onChange();
+    };
+    center_->onAlert = [this](const ShareCenter::Share& share) {
+        if (callbacks_.onAlert) callbacks_.onAlert(share);
+    };
+    center_->setAlertsEnabled(options.alertsEnabled);
+    center_->refresh();
 }
 
 Engine::~Engine() {
+    // The center goes first (its thread drives the session and the output), then the output,
+    // then the session, whose threads call back into this object.
+    center_.reset();
     output_->stop();
-    // The session goes first: its threads call back into this object.
     session_.reset();
 }
 
@@ -137,17 +184,73 @@ void Engine::setRole(GroupSession::Role role) {
     }
 }
 
-void Engine::follow(const std::string& leader) {
-    session_->follow(leader, [this, leader]() -> std::optional<net::Address> {
-        return callbacks_.resolve ? callbacks_.resolve(leader) : std::nullopt;
-    });
-}
-
 std::string Engine::loadTrack(const std::string& path, const std::string& name, const uint8_t digest[32]) {
     std::string error;
     auto file = loadMediaFile(path, name, digest, error);
     if (file) session_->addTrack(std::move(file));
     return error;
+}
+
+void Engine::playSelected() {
+    const GroupSession::Snapshot snapshot = session_->snapshot();
+    if (snapshot.role == GroupSession::Role::leader && snapshot.selectedTrack) session_->play(snapshot.selectedTrack->id);
+}
+
+void Engine::setSourceStatus(bool isLoading, const std::string& error) {
+    {
+        std::lock_guard<std::mutex> lock(sourceMutex_);
+        sourceError_ = error;
+    }
+    isLoadingSource_ = isLoading;
+}
+
+std::string Engine::stateJSON() const {
+    const ShareCenter::State state = center_->state();
+    JsonWriter json;
+    json.beginObject();
+    json.key("mode").value(state.mode == ShareCenter::Mode::share ? "share" : "listen");
+    json.key("deviceName").value(state.deviceName);
+    json.key("nearby").beginArray();
+    for (const auto& share : state.nearby) writeShare(json, share);
+    json.endArray();
+    json.key("alerts").beginArray();
+    for (const auto& share : state.alerts) writeShare(json, share);
+    json.endArray();
+    json.key("hasUnseenShares").value(state.hasUnseenShares);
+    json.key("discoveryError").value(state.discoveryError);
+
+    json.key("joined");
+    if (state.joined) writeShare(json, *state.joined); else json.null();
+    json.key("isPlaying").value(state.isPlaying);
+    json.key("channel").value(static_cast<int>(state.channel));
+    json.key("joinedLayout").value(static_cast<int>(state.joinedLayout));
+    json.key("syncStatus").value(syncStatusName(state.syncStatus));
+
+    json.key("source");
+    if (state.source) {
+        json.beginObject().key("name").value(state.source->name).key("kind").value(static_cast<int>(state.source->kind)).endObject();
+    } else {
+        json.null();
+    }
+    json.key("isSharing").value(state.isSharing);
+    json.key("shareProblem").value(state.shareProblem);
+    json.key("layout").value(static_cast<int>(state.layout));
+    json.key("listeners").beginArray();
+    for (const auto& listener : state.listeners) {
+        json.beginObject().key("id").id(listener.id).key("name").value(listener.name).key("channel");
+        if (listener.channel) json.value(static_cast<int>(*listener.channel)); else json.null();
+        json.endObject();
+    }
+    json.endArray();
+    json.key("revision").value(static_cast<int64_t>(state.revision));
+    json.endObject();
+    return json.text();
+}
+
+std::string shareJSON(const ShareCenter::Share& share) {
+    JsonWriter json;
+    writeShare(json, share);
+    return json.text();
 }
 
 std::string Engine::snapshotJSON() const {

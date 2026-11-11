@@ -11,13 +11,15 @@
 #include <pthread.h>
 
 #include <memory>
-#include <optional>
 #include <string>
 
 #include "Engine.h"
 
 using asyncmusic::DeviceIdentity;
 using asyncmusic::GroupSession;
+using asyncmusic::ShareCenter;
+using asyncmusic::ShareDeviceKind;
+using asyncmusic::ShareSourceKind;
 using asyncmusic::SpeakerChannel;
 using asyncmusic::SpeakerLayout;
 using asyncmusic::android::Engine;
@@ -66,13 +68,17 @@ std::string fromBytes(JNIEnv* env, jbyteArray bytes) {
 struct Bridge {
     jobject callbacks = nullptr;
     jmethodID onChange = nullptr;
+    jmethodID onAlert = nullptr;
     jmethodID onSpeakerSettingsChange = nullptr;
-    jmethodID resolve = nullptr;
     std::unique_ptr<Engine> engine;
 };
 
 Bridge* bridge(jlong handle) {
     return reinterpret_cast<Bridge*>(handle);
+}
+
+ShareCenter& center(jlong handle) {
+    return bridge(handle)->engine->center();
 }
 
 void clearException(JNIEnv* env) {
@@ -99,13 +105,13 @@ extern "C" JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void*) {
 }
 
 extern "C" JNIEXPORT jlong JNICALL Java_me_ktiays_asyncmusic_engine_NativeEngine_nativeCreate(JNIEnv* env, jclass, jobject callbacks, jlong id,
-    jbyteArray name, jint layout, jlong left, jlong right, jdouble manualOffset) {
+    jbyteArray name, jint deviceKind, jbyteArray model, jint layout, jlong left, jlong right, jdouble manualOffset, jfloat volume, jboolean alertsEnabled) {
     auto* result = new Bridge;
     result->callbacks = env->NewGlobalRef(callbacks);
     jclass type = env->GetObjectClass(callbacks);
     result->onChange = env->GetMethodID(type, "onChange", "()V");
+    result->onAlert = env->GetMethodID(type, "onAlert", "([B)V");
     result->onSpeakerSettingsChange = env->GetMethodID(type, "onSpeakerSettingsChange", "(IJJ)V");
-    result->resolve = env->GetMethodID(type, "resolve", "([B)Ljava/lang/String;");
     env->DeleteLocalRef(type);
 
     Engine::Callbacks hooks;
@@ -114,6 +120,14 @@ extern "C" JNIEXPORT jlong JNICALL Java_me_ktiays_asyncmusic_engine_NativeEngine
             env->CallVoidMethod(result->callbacks, result->onChange);
             clearException(env);
         }
+    };
+    hooks.onAlert = [result](const ShareCenter::Share& share) {
+        JNIEnv* env = currentEnv();
+        if (env == nullptr) return;
+        jbyteArray json = toBytes(env, asyncmusic::android::shareJSON(share));
+        env->CallVoidMethod(result->callbacks, result->onAlert, json);
+        clearException(env);
+        env->DeleteLocalRef(json);
     };
     hooks.onSpeakerSettingsChange = [result](const GroupSession::SpeakerSettings& settings) {
         JNIEnv* env = currentEnv();
@@ -126,26 +140,17 @@ extern "C" JNIEXPORT jlong JNICALL Java_me_ktiays_asyncmusic_engine_NativeEngine
             device(SpeakerChannel::right));
         clearException(env);
     };
-    hooks.resolve = [result](const std::string& leader) -> std::optional<asyncmusic::net::Address> {
-        JNIEnv* env = currentEnv();
-        if (env == nullptr) return std::nullopt;
-        jbyteArray name = toBytes(env, leader);
-        auto found = static_cast<jstring>(env->CallObjectMethod(result->callbacks, result->resolve, name));
-        clearException(env);
-        env->DeleteLocalRef(name);
-        if (found == nullptr) return std::nullopt;
-        // "host port", the host numeric (IPv6 possibly with a scope).
-        const std::string text = toString(env, found);
-        env->DeleteLocalRef(found);
-        const size_t space = text.rfind(' ');
-        if (space == std::string::npos) return std::nullopt;
-        const int port = std::atoi(text.c_str() + space + 1);
-        if (port <= 0 || port > 65535) return std::nullopt;
-        return asyncmusic::net::Address::fromString(text.substr(0, space), static_cast<uint16_t>(port));
-    };
 
-    result->engine = std::make_unique<Engine>(DeviceIdentity{static_cast<uint64_t>(id), fromBytes(env, name)}, speakerSettings(layout, left, right),
-        manualOffset, std::move(hooks));
+    Engine::Options options;
+    options.identity = DeviceIdentity{static_cast<uint64_t>(id), fromBytes(env, name)};
+    options.device.kind = deviceKind >= 0 && deviceKind <= static_cast<int>(ShareDeviceKind::tablet) ? static_cast<ShareDeviceKind>(deviceKind)
+                                                                                                    : ShareDeviceKind::unknown;
+    options.device.model = fromBytes(env, model);
+    options.speakers = speakerSettings(layout, left, right);
+    options.manualOffset = manualOffset;
+    options.volume = volume;
+    options.alertsEnabled = alertsEnabled;
+    result->engine = std::make_unique<Engine>(std::move(options), std::move(hooks));
     return reinterpret_cast<jlong>(result);
 }
 
@@ -156,17 +161,71 @@ extern "C" JNIEXPORT void JNICALL Java_me_ktiays_asyncmusic_engine_NativeEngine_
     delete target;
 }
 
-extern "C" JNIEXPORT void JNICALL Java_me_ktiays_asyncmusic_engine_NativeEngine_nativeSetRole(JNIEnv*, jclass, jlong handle, jint role) {
-    bridge(handle)->engine->setRole(static_cast<GroupSession::Role>(role));
-}
-
 extern "C" JNIEXPORT void JNICALL Java_me_ktiays_asyncmusic_engine_NativeEngine_nativeSetIdentity(JNIEnv* env, jclass, jlong handle, jlong id, jbyteArray name) {
     bridge(handle)->engine->session().setIdentity(DeviceIdentity{static_cast<uint64_t>(id), fromBytes(env, name)});
 }
 
-extern "C" JNIEXPORT void JNICALL Java_me_ktiays_asyncmusic_engine_NativeEngine_nativeFollow(JNIEnv* env, jclass, jlong handle, jbyteArray leader) {
-    bridge(handle)->engine->follow(fromBytes(env, leader));
+// MARK: - Share center
+
+extern "C" JNIEXPORT void JNICALL Java_me_ktiays_asyncmusic_engine_NativeEngine_nativeSetMode(JNIEnv*, jclass, jlong handle, jboolean share) {
+    center(handle).setMode(share ? ShareCenter::Mode::share : ShareCenter::Mode::listen);
 }
+
+extern "C" JNIEXPORT void JNICALL Java_me_ktiays_asyncmusic_engine_NativeEngine_nativeSetAlertsEnabled(JNIEnv*, jclass, jlong handle, jboolean enabled) {
+    center(handle).setAlertsEnabled(enabled);
+}
+
+extern "C" JNIEXPORT void JNICALL Java_me_ktiays_asyncmusic_engine_NativeEngine_nativeJoin(JNIEnv*, jclass, jlong handle, jlong share) {
+    center(handle).join(static_cast<uint64_t>(share));
+}
+
+extern "C" JNIEXPORT jboolean JNICALL Java_me_ktiays_asyncmusic_engine_NativeEngine_nativeJoinAddress(JNIEnv* env, jclass, jlong handle, jbyteArray name,
+    jstring host, jint port) {
+    if (port <= 0 || port > 65535) return JNI_FALSE;
+    const auto address = asyncmusic::net::Address::fromString(toString(env, host), static_cast<uint16_t>(port));
+    if (!address) return JNI_FALSE;
+    center(handle).joinAddress(fromBytes(env, name), *address);
+    return JNI_TRUE;
+}
+
+extern "C" JNIEXPORT void JNICALL Java_me_ktiays_asyncmusic_engine_NativeEngine_nativeLeave(JNIEnv*, jclass, jlong handle) {
+    center(handle).leave();
+}
+
+extern "C" JNIEXPORT void JNICALL Java_me_ktiays_asyncmusic_engine_NativeEngine_nativeRequestChannel(JNIEnv*, jclass, jlong handle, jint channel) {
+    if (channel <= 0 || channel > asyncmusic::kSpeakerChannelMaximum) return;
+    center(handle).requestChannel(static_cast<SpeakerChannel>(channel));
+}
+
+extern "C" JNIEXPORT void JNICALL Java_me_ktiays_asyncmusic_engine_NativeEngine_nativeDismissAlerts(JNIEnv*, jclass, jlong handle) {
+    center(handle).dismissAlerts();
+}
+
+extern "C" JNIEXPORT void JNICALL Java_me_ktiays_asyncmusic_engine_NativeEngine_nativeRefresh(JNIEnv*, jclass, jlong handle) {
+    center(handle).refresh();
+}
+
+extern "C" JNIEXPORT void JNICALL Java_me_ktiays_asyncmusic_engine_NativeEngine_nativeSelectSource(JNIEnv* env, jclass, jlong handle, jbyteArray name, jint kind) {
+    ShareCenter::Source source;
+    source.name = fromBytes(env, name);
+    source.kind = kind >= 0 && kind <= static_cast<int>(ShareSourceKind::system) ? static_cast<ShareSourceKind>(kind) : ShareSourceKind::unknown;
+    center(handle).selectSource(std::move(source));
+}
+
+extern "C" JNIEXPORT void JNICALL Java_me_ktiays_asyncmusic_engine_NativeEngine_nativeStartSharing(JNIEnv*, jclass, jlong handle) {
+    center(handle).startSharing();
+}
+
+extern "C" JNIEXPORT void JNICALL Java_me_ktiays_asyncmusic_engine_NativeEngine_nativeStopSharing(JNIEnv*, jclass, jlong handle) {
+    center(handle).stopSharing();
+}
+
+extern "C" JNIEXPORT void JNICALL Java_me_ktiays_asyncmusic_engine_NativeEngine_nativeSetLayout(JNIEnv*, jclass, jlong handle, jint layout) {
+    if (layout < 0 || layout > asyncmusic::kSpeakerLayoutMaximum) return;
+    center(handle).setLayout(static_cast<SpeakerLayout>(layout));
+}
+
+// MARK: - Source and output
 
 extern "C" JNIEXPORT jbyteArray JNICALL Java_me_ktiays_asyncmusic_engine_NativeEngine_nativeLoadTrack(JNIEnv* env, jclass, jlong handle, jstring path,
     jbyteArray name, jbyteArray digest) {
@@ -176,27 +235,9 @@ extern "C" JNIEXPORT jbyteArray JNICALL Java_me_ktiays_asyncmusic_engine_NativeE
     return error.empty() ? nullptr : toBytes(env, error);
 }
 
-extern "C" JNIEXPORT void JNICALL Java_me_ktiays_asyncmusic_engine_NativeEngine_nativePlay(JNIEnv*, jclass, jlong handle, jlong source) {
-    bridge(handle)->engine->session().play(static_cast<uint64_t>(source));
-}
-
-extern "C" JNIEXPORT void JNICALL Java_me_ktiays_asyncmusic_engine_NativeEngine_nativeStop(JNIEnv*, jclass, jlong handle) {
-    bridge(handle)->engine->session().stopPlayback();
-}
-
-extern "C" JNIEXPORT void JNICALL Java_me_ktiays_asyncmusic_engine_NativeEngine_nativeSetLayout(JNIEnv*, jclass, jlong handle, jint layout) {
-    if (layout < 0 || layout > asyncmusic::kSpeakerLayoutMaximum) return;
-    bridge(handle)->engine->session().setSpeakerLayout(static_cast<SpeakerLayout>(layout));
-}
-
-extern "C" JNIEXPORT void JNICALL Java_me_ktiays_asyncmusic_engine_NativeEngine_nativeAssign(JNIEnv*, jclass, jlong handle, jlong device, jint channel) {
-    if (channel <= 0 || channel > asyncmusic::kSpeakerChannelMaximum) return;
-    const std::optional<uint64_t> target = device == 0 ? std::nullopt : std::optional<uint64_t>(static_cast<uint64_t>(device));
-    bridge(handle)->engine->session().assign(target, static_cast<SpeakerChannel>(channel));
-}
-
-extern "C" JNIEXPORT void JNICALL Java_me_ktiays_asyncmusic_engine_NativeEngine_nativeSwapChannels(JNIEnv*, jclass, jlong handle) {
-    bridge(handle)->engine->session().swapChannels();
+extern "C" JNIEXPORT void JNICALL Java_me_ktiays_asyncmusic_engine_NativeEngine_nativeSetSourceStatus(JNIEnv* env, jclass, jlong handle, jboolean isLoading,
+    jbyteArray error) {
+    bridge(handle)->engine->setSourceStatus(isLoading, fromBytes(env, error));
 }
 
 extern "C" JNIEXPORT void JNICALL Java_me_ktiays_asyncmusic_engine_NativeEngine_nativeClearLog(JNIEnv*, jclass, jlong handle) {
@@ -205,6 +246,28 @@ extern "C" JNIEXPORT void JNICALL Java_me_ktiays_asyncmusic_engine_NativeEngine_
 
 extern "C" JNIEXPORT void JNICALL Java_me_ktiays_asyncmusic_engine_NativeEngine_nativeSetManualOffset(JNIEnv*, jclass, jlong handle, jdouble milliseconds) {
     bridge(handle)->engine->setManualOffset(milliseconds);
+}
+
+extern "C" JNIEXPORT void JNICALL Java_me_ktiays_asyncmusic_engine_NativeEngine_nativeSetVolume(JNIEnv*, jclass, jlong handle, jfloat volume) {
+    bridge(handle)->engine->setVolume(volume);
+}
+
+extern "C" JNIEXPORT void JNICALL Java_me_ktiays_asyncmusic_engine_NativeEngine_nativeSetPausedHere(JNIEnv*, jclass, jlong handle, jboolean paused) {
+    bridge(handle)->engine->setPausedHere(paused);
+}
+
+extern "C" JNIEXPORT void JNICALL Java_me_ktiays_asyncmusic_engine_NativeEngine_nativePlaySelected(JNIEnv*, jclass, jlong handle) {
+    bridge(handle)->engine->playSelected();
+}
+
+extern "C" JNIEXPORT void JNICALL Java_me_ktiays_asyncmusic_engine_NativeEngine_nativeStopPlayback(JNIEnv*, jclass, jlong handle) {
+    bridge(handle)->engine->stopPlayback();
+}
+
+// MARK: - State
+
+extern "C" JNIEXPORT jbyteArray JNICALL Java_me_ktiays_asyncmusic_engine_NativeEngine_nativeState(JNIEnv* env, jclass, jlong handle) {
+    return toBytes(env, bridge(handle)->engine->stateJSON());
 }
 
 extern "C" JNIEXPORT jbyteArray JNICALL Java_me_ktiays_asyncmusic_engine_NativeEngine_nativeSnapshot(JNIEnv* env, jclass, jlong handle) {

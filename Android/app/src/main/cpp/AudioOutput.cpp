@@ -132,6 +132,10 @@ void AudioOutput::setManualOffset(double milliseconds) {
     renderer_.setPresentationDelay(static_cast<int64_t>(milliseconds * 1e6));
 }
 
+void AudioOutput::setVolume(float volume) {
+    volume_ = std::clamp(volume, 0.0f, 1.0f);
+}
+
 AudioOutput::Status AudioOutput::status() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return status_;
@@ -185,6 +189,7 @@ bool AudioOutput::play() {
 
     sampleRate_ = AAudioStream_getSampleRate(stream);
     framesRendered_ = 0;
+    appliedGain_ = volume_.load() * volume_.load();
     hasLine_ = false;
     status.deviceID = AAudioStream_getDeviceId(stream);
     status.sampleRate = sampleRate_;
@@ -278,10 +283,18 @@ int32_t AudioOutput::render(float* interleaved, int32_t frameCount) {
         const int64_t hostTime = hasLine ? static_cast<int64_t>(std::llround(line.baseTime + line.slope * (frame - line.baseFrame))) : 0;
         renderer_.render(hasLine, hostTime, count, sampleRate_, left_, right_);
         float* out = interleaved + 2 * static_cast<size_t>(offset);
+        // A perceptual curve, so the slider's middle sounds like half as loud; ramped across the
+        // chunk so a change doesn't click.
+        const float target = muted_.load(std::memory_order_relaxed) ? 0.0f : volume_.load(std::memory_order_relaxed);
+        const float targetGain = target * target;
+        const float step = (targetGain - appliedGain_) / static_cast<float>(count);
+        float gain = appliedGain_;
         for (int i = 0; i < count; ++i) {
-            out[2 * i] = left_[i];
-            out[2 * i + 1] = right_[i];
+            gain += step;
+            out[2 * i] = left_[i] * gain;
+            out[2 * i + 1] = right_[i] * gain;
         }
+        appliedGain_ = targetGain;
         offset += count;
     }
     framesRendered_ += frameCount;
