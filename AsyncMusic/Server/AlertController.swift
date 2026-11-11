@@ -49,8 +49,8 @@ final class AlertController: NSObject, NSPopoverDelegate {
     private let popover = NSPopover()
     /// An invisible window over the menu bar icon, for the popover to point at.
     private let anchor = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 1, height: 1), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
-    private lazy var window = AlertWindow { [unowned self] in
-        ShareAlertWindowView(center: center) { [weak self] hovering in self?.hoverChanged(hovering) }
+    private lazy var window = AlertWindow(cornerRadius: ShareAlertWindowView.cornerRadius) { [unowned self] in
+        CenteredAlerts(center: center) { [weak self] hovering in self?.hoverChanged(hovering) }
     }
     private var outsideClickMonitor: Any?
     private var timeout: Task<Void, Never>?
@@ -192,5 +192,15 @@ final class AlertController: NSObject, NSPopoverDelegate {
         guard let outsideClickMonitor else { return }
         NSEvent.removeMonitor(outsideClickMonitor)
         self.outsideClickMonitor = nil
+    }
+}
+
+/// The centered alert, kept up to date with the center's alerts.
+private struct CenteredAlerts: View {
+    let center: ShareCenter
+    var onHover: (Bool) -> Void
+
+    var body: some View {
+        ShareAlertWindowView(alerts: center.alerts, join: { center.join($0) }, dismiss: { center.dismissAlerts() }, onHover: onHover)
     }
 }

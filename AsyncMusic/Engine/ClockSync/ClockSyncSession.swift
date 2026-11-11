@@ -246,6 +246,14 @@ final class ClockSyncSession {
         client.start()
     }
 
+    /// Follower: asks the leader to play `channel` of its layout on this device. The device that
+    /// had it trades places with this one.
+    func requestChannel(_ channel: SpeakerChannel) {
+        guard role == .follower, let follower else { return }
+        follower.requestChannel(channel)
+        append("Asked to play \(channel.title)")
+    }
+
     func clearLog() {
         log = []
     }
@@ -271,9 +279,10 @@ final class ClockSyncSession {
     }
     #endif
 
-    /// Leader only: starts `source` from the top on every device. The metronome starts after
+    /// Leader only: starts `source` on every device, from `position` (media nanoseconds; files
+    /// only, generated sources always start from the top). The metronome starts after
     /// `startLeadTime`; files start as soon as every follower has buffered enough.
-    func play(source: UInt64) {
+    func play(source: UInt64, from position: Int64 = 0) {
         guard role == .leader, let leader else { return }
         #if os(macOS)
         applicationAudio.stop()
@@ -294,7 +303,7 @@ final class ClockSyncSession {
         let provisional = PlaybackState(
             source: source,
             startLeaderTime: requested + Int64(maximumStartWait * 1e9) + startMargin,
-            startMediaTime: 0
+            startMediaTime: max(position, 0)
         )
         player.update(playback: provisional)
         guard let stream = outgoingStream, stream.source == source, let audioServer else {
@@ -311,7 +320,7 @@ final class ClockSyncSession {
             DispatchQueue.main.async {
                 guard let self, self.pendingStart == token, let leader = self.leader else { return }
                 self.pendingStart = nil
-                let state = PlaybackState(source: source, startLeaderTime: HostClock.now() + self.startMargin, startMediaTime: 0)
+                let state = PlaybackState(source: source, startLeaderTime: HostClock.now() + self.startMargin, startMediaTime: provisional.startMediaTime)
                 self.player.update(playback: state)
                 leader.setPlayback(state)
                 self.scheduleEndOfTrack(state)
@@ -538,6 +547,13 @@ final class ClockSyncSession {
                 guard let self, count != self.followerCount else { return }
                 self.followerCount = count
                 self.append("Followers: \(count)")
+            }
+        }
+        leader.onChannelRequest = { [weak self] device, channel in
+            DispatchQueue.main.async {
+                guard let self, self.role == .leader, self.speakerLayout.channels.contains(channel) else { return }
+                self.append("\(self.name(ofDevice: device) ?? "A follower") chose \(channel.title)")
+                self.assign(device, to: channel)
             }
         }
         leader.onMembersChange = { [weak self] members in

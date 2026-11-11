@@ -5,40 +5,27 @@
 
 import SwiftUI
 
+/// The iPhone, iPad and Vision Pro app: the same Listen/Share model the Mac runs in AsyncMusic
+/// Server, run here in the app. The system's media controls follow what plays, and new shares
+/// arrive as notifications while the app plays in the background.
 struct ContentView: View {
-    @State private var session = ClockSyncSession()
-    @State private var showsDiagnostics = false
+    @State private var center = ShareCenter()
+    @State private var nowPlaying: NowPlayingController?
+    @State private var notifications = ShareNotifications()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
-        NavigationStack {
-            Group {
-                switch session.role {
-                case .off:
-                    WelcomeView(session: session)
-                case .leader:
-                    HostView(session: session)
-                case .follower:
-                    JoinView(session: session)
-                }
+        HomeView(center: center)
+            .task {
+                nowPlaying = NowPlayingController(center: center)
+                notifications.attach(to: center)
+                center.panelOpened()
             }
-            .animation(.default, value: session.role)
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        showsDiagnostics = true
-                    } label: {
-                        Label("Diagnostics", systemImage: "waveform.path.ecg")
-                    }
-                    .help("Diagnostics")
-                }
+            .onChange(of: scenePhase) { _, phase in
+                notifications.isAppActive = phase == .active
+                // The app open is the Mac's open panel: shares are listed, not alerted.
+                if phase == .active { center.panelOpened() }
             }
-            .navigationDestination(isPresented: $showsDiagnostics) {
-                DiagnosticsView(session: session)
-            }
-        }
-        #if os(macOS)
-        .frame(minWidth: 420, minHeight: 560)
-        #endif
     }
 }
 

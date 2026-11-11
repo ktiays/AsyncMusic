@@ -38,12 +38,27 @@ struct ShareAlertsView: View {
 
 /// What the share alert window in the middle of the screen shows, when there's no menu bar icon:
 /// one share large, several as a list, with a close button in the corner.
+///
+/// Everything at the window's edge is concentric with its corners: the close button's circle
+/// shares the corner's center, and the Join button's corners are the window's, less the margin.
 struct ShareAlertWindowView: View {
-    let center: ShareCenter
+    let alerts: [NearbyShare]
+    var join: (NearbyShare) -> Void
+    var dismiss: () -> Void
     var onHover: (Bool) -> Void
 
-    private var alerts: [NearbyShare] { center.alerts }
     private static let maxRows = 4
+    /// The window's corner radius (`AlertWindow` applies it).
+    static let cornerRadius: CGFloat = 26
+    /// The close button's circle as drawn; the glass style adds `glassPadding` around its label.
+    private static let closeSize: CGFloat = 32
+    private static let glassPadding: CGFloat = 4
+    /// Puts the close button's center on the corner's.
+    private static let closeInset = cornerRadius - closeSize / 2
+    /// Between the Join button and the window's edges.
+    private static let margin: CGFloat = 14
+    private static let joinRadius = cornerRadius - margin
+    private static let listMargin: CGFloat = 20
 
     var body: some View {
         Group {
@@ -60,59 +75,64 @@ struct ShareAlertWindowView: View {
 
     private func single(_ share: NearbyShare) -> some View {
         VStack(spacing: 0) {
-            DeviceIcon(share: share, size: 96)
-                .padding(.top, 16)
+            DeviceIcon(share: share, size: 104)
+                .padding(.top, 34)
             Text(share.name)
-                .font(.title3.weight(.semibold))
+                .font(.title2.weight(.semibold))
                 .multilineTextAlignment(.center)
                 .lineLimit(2)
                 .padding(.top, 14)
             Text("Sharing \(share.summary)")
-                .font(.subheadline)
+                .font(.body)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .lineLimit(2)
-                .padding(.top, 3)
-            Button { center.join(share) } label: {
-                Text("Join").frame(maxWidth: .infinity)
+                .padding(.top, 4)
+                .padding(.horizontal, 10)
+            Button { join(share) } label: {
+                Text("Join").font(.body.weight(.semibold)).frame(maxWidth: .infinity)
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .padding(.top, 20)
+            .buttonStyle(.glassProminent)
+            .buttonBorderShape(.roundedRectangle(radius: Self.joinRadius))
+            .controlSize(.extraLarge)
+            .padding(.top, 26)
         }
-        .padding(20)
-        .frame(width: 300)
-        .overlay(alignment: .topTrailing) {
-            closeButton.padding(10)
+        .padding([.horizontal, .bottom], Self.margin)
+        .frame(width: 320)
+        .overlay(alignment: .topLeading) {
+            closeButton.padding(Self.closeInset)
         }
     }
 
     private var list: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("\(alerts.count) Shares Nearby").font(.headline)
-                Spacer()
+            HStack(spacing: 10) {
                 closeButton
+                Text("\(alerts.count) Shares Nearby").font(.headline)
             }
-            .padding(.bottom, 14)
+            .padding(.top, Self.closeInset)
+            // Out of the rows' margin, into the corner.
+            .padding(.leading, Self.closeInset - Self.listMargin)
+            .padding(.bottom, 12)
             ForEach(Array(alerts.prefix(Self.maxRows).enumerated()), id: \.element.id) { index, share in
                 if index > 0 { Divider().padding(.vertical, 10) }
-                AlertRow(share: share, iconSize: 44) { center.join(share) }
+                AlertRow(share: share, iconSize: 44) { join(share) }
             }
             if alerts.count > Self.maxRows {
                 Divider().padding(.vertical, 10)
                 MoreSharesLabel(count: alerts.count - Self.maxRows)
             }
         }
-        .padding(18)
-        .frame(width: 360)
+        .padding(.horizontal, Self.listMargin)
+        .padding(.bottom, Self.listMargin)
+        .frame(width: 380)
     }
 
     private var closeButton: some View {
-        Button { center.dismissAlerts() } label: {
+        Button(action: dismiss) {
             Image(systemName: "xmark")
-                .font(.system(size: 13, weight: .semibold))
-                .frame(width: 28, height: 28)
+                .font(.system(size: 12, weight: .bold))
+                .frame(width: Self.closeSize - 2 * Self.glassPadding, height: Self.closeSize - 2 * Self.glassPadding)
         }
         .buttonStyle(.glass)
         .buttonBorderShape(.circle)

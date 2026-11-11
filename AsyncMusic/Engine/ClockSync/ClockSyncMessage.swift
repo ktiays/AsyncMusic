@@ -18,8 +18,9 @@ nonisolated enum ClockSyncMessage: Sendable, Equatable {
     /// The TCP port of the leader's audio stream, on the same host as the clock service.
     /// Sent with the playback state, so followers need no second Bonjour lookup.
     case audioPort(session: UInt64, port: UInt16)
-    /// Sent by followers every round: a stable device ID and a display name.
-    case hello(device: UInt64, name: String)
+    /// Sent by followers every round: a stable device ID, a display name, and the channel it
+    /// asks to play with that request's number (0: no request; the leader acts once per number).
+    case hello(device: UInt64, name: String, requestedChannel: SpeakerChannel = .full, channelRequest: UInt32 = 0)
     /// The group's speaker layout and the channel the receiving follower plays from
     /// `switchLeaderTime` on. `revision` increases with every change within a leader session.
     case speakers(revision: UInt32, session: UInt64, layout: SpeakerLayout, channel: SpeakerChannel, switchLeaderTime: Int64)
@@ -34,8 +35,8 @@ nonisolated enum ClockSyncMessage: Sendable, Equatable {
             .makePlayback(revision, session, state)
         case let .audioPort(session, port):
             .makeAudioPort(session, port)
-        case let .hello(device, name):
-            .makeHello(device, Data(Self.truncated(name).utf8).coreBytes)
+        case let .hello(device, name, requestedChannel, channelRequest):
+            .makeHello(device, Data(Self.truncated(name).utf8).coreBytes, requestedChannel, channelRequest)
         case let .speakers(revision, session, layout, channel, switchLeaderTime):
             .makeSpeakers(revision, session, layout, channel, switchLeaderTime)
         }
@@ -58,7 +59,8 @@ nonisolated enum ClockSyncMessage: Sendable, Equatable {
         case .audioPort:
             self = .audioPort(session: message.session, port: message.port)
         case .hello:
-            self = .hello(device: message.device, name: String(decoding: Data(message.name), as: UTF8.self))
+            self = .hello(device: message.device, name: String(decoding: Data(message.name), as: UTF8.self),
+                          requestedChannel: message.requestedChannel, channelRequest: message.channelRequest)
         case .speakers:
             self = .speakers(revision: message.sequence, session: message.session, layout: message.layout, channel: message.channel, switchLeaderTime: message.switchLeaderTime)
         @unknown default:

@@ -3,17 +3,23 @@
 //  Copyright (c) 2026 ktiays. All rights reserved.
 //
 
-import AppKit
 import AsyncMusicCore
-import IOKit.ps
+import Foundation
 import Network
 import Observation
 import UniformTypeIdentifiers
+#if os(macOS)
+import AppKit
+import IOKit.ps
+#else
+import UIKit
+#endif
 
 typealias ShareDiscovery = asyncmusic.ShareDiscovery
 
-/// The server's model: whether this Mac listens for shares or shares its own audio, the shares
-/// heard nearby and the alerts for new ones, and the group session doing the playing.
+/// The share model: whether this device listens for shares or shares its own audio, the shares
+/// heard nearby and the alerts for new ones, and the group session doing the playing. On a Mac
+/// it runs in AsyncMusic Server; iPhone, iPad and Vision Pro run it in the app.
 ///
 /// Listening and sharing exclude each other, as `ShareDiscovery` does on the network. Listening
 /// is the default, so alerts arrive without opening anything. Joining a share follows the
@@ -35,7 +41,14 @@ final class ShareCenter {
     private(set) var shareSource: ShareSource?
     private(set) var isSharing = false
     private(set) var discoveryError: String?
+    #if os(macOS)
     let catalog = AudioApplicationCatalog()
+    #endif
+
+    /// Listening: this device keeps its place in the group but plays nothing (the system's pause).
+    private(set) var isListeningPaused = false
+    /// Sharing a file: where it was paused, in media nanoseconds; nil while it plays (or before).
+    private(set) var pausedPosition: Int64?
 
     /// Called when a new alert arrives, for the window that shows it.
     @ObservationIgnored var onAlert: (() -> Void)?
@@ -44,13 +57,14 @@ final class ShareCenter {
     @ObservationIgnored private var generation: UInt64 = 0
     @ObservationIgnored private var seenShares: Set<UInt64> = []
     @ObservationIgnored private var announcedInfo: asyncmusic.ShareInfo?
-    @ObservationIgnored private var playsWhenLoaded = false
+    // Observed: the state shows "Loading…" while it is set.
+    private var playsWhenLoaded = false
     @ObservationIgnored private var pollTask: Task<Void, Never>?
+    #if os(macOS)
     @ObservationIgnored private var openPanel: NSOpenPanel?
+    #endif
 
     private static let settingsKey = "ShareCenter.settings"
-    /// Where `DeviceIdentity` reads the custom name from.
-    private static let deviceNameKey = "AppSettings.deviceName"
 
     init() {
         let defaults = UserDefaults.standard
@@ -78,7 +92,7 @@ final class ShareCenter {
         self.settings = settings
         let defaults = UserDefaults.standard
         defaults.set(try? JSONEncoder().encode(settings), forKey: Self.settingsKey)
-        defaults.set(settings.customDeviceName, forKey: Self.deviceNameKey)
+        defaults.set(settings.customDeviceName, forKey: DeviceIdentity.customNameKey)
     }
 
     func setMode(_ mode: ShareMode) {
@@ -120,6 +134,7 @@ final class ShareCenter {
         guard joined != nil else { return }
         session.setRole(.off)
         joined = nil
+        setListeningPaused(false)
     }
 
     func dismissAlerts() {
@@ -137,6 +152,24 @@ final class ShareCenter {
         session.player.volume = min(max(volume, 0), 1)
     }
 
+    /// Listening to a stereo pair: plays `channel` here; the device that had it takes this one's
+    /// place. The sharer's stream already carries both channels, so this costs it nothing.
+    func requestChannel(_ channel: ServerState.Channel) {
+        switch channel {
+        case .left: session.requestChannel(.left)
+        case .right: session.requestChannel(.right)
+        case .full: break
+        }
+    }
+
+    /// Silences (or brings back) this device while it stays in the group and in sync, so playing
+    /// again picks up exactly where the share is. A listener can't pause the sharer.
+    func setListeningPaused(_ paused: Bool) {
+        guard paused != isListeningPaused else { return }
+        isListeningPaused = paused
+        session.player.isMuted = paused
+    }
+
     // MARK: - Sharing
 
     func select(_ source: ShareSource) {
@@ -144,6 +177,7 @@ final class ShareCenter {
         shareSource = source
     }
 
+    #if os(macOS)
     /// Asks for an audio file to share. The server opens it, so the server asks.
     func chooseFile() {
         if let openPanel {
@@ -163,6 +197,22 @@ final class ShareCenter {
             if response == .OK, let url = panel.url { select(.file(url)) }
         }
     }
+    #else
+    /// Shares a file picked from Files. Picked files are only readable while their security
+    /// scope is open, and playing reads the file again later, so it's copied in first.
+    func importFile(_ url: URL) throws {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        let manager = FileManager.default
+        let folder = manager.temporaryDirectory.appending(path: "Shared Audio", directoryHint: .isDirectory)
+        // Only the file being shared is kept.
+        try? manager.removeItem(at: folder)
+        try manager.createDirectory(at: folder, withIntermediateDirectories: true)
+        let copy = folder.appending(path: url.lastPathComponent)
+        try manager.copyItem(at: url, to: copy)
+        select(.file(copy))
+    }
+    #endif
 
     func startSharing() {
         guard let shareSource else { return }
@@ -170,13 +220,18 @@ final class ShareCenter {
         session.setRole(.leader)
         switch shareSource {
         case let .application(application):
+            #if os(macOS)
             session.selectAudioApplication(application)
             session.playSelectedSource()
+            #else
+            _ = application
+            #endif
         case let .file(url):
             playsWhenLoaded = true
             session.loadTrack(from: url)
         }
         isSharing = true
+        pausedPosition = nil
         announcedInfo = nil
     }
 
@@ -184,6 +239,7 @@ final class ShareCenter {
         guard isSharing else { return }
         isSharing = false
         playsWhenLoaded = false
+        pausedPosition = nil
         announcedInfo = nil
         discovery.stop()
         session.setRole(.off)
@@ -193,13 +249,66 @@ final class ShareCenter {
         session.setSpeakerLayout(layout)
     }
 
+    /// The file being shared, once loaded.
+    var sharedFile: MediaFile? {
+        guard isSharing, shareSource?.isFile == true else { return nil }
+        return session.selectedTrack
+    }
+
+    /// Whether the shared file is playing on the group (not paused, finished or still loading).
+    var isFilePlaying: Bool {
+        guard let file = sharedFile else { return false }
+        return session.player.playback.source == file.id
+    }
+
+    /// Where the shared file is now, in seconds (its paused position while paused).
+    var filePosition: Double {
+        guard let file = sharedFile else { return 0 }
+        if let pausedPosition { return Double(pausedPosition) / 1e9 }
+        let playback = session.player.playback
+        guard playback.source == file.id else { return 0 }
+        // The leader's own clock is the group's timeline.
+        // Before a scheduled start, it's where it will start.
+        let position = max(HostClock.now() - playback.startLeaderTime, 0) + playback.startMediaTime
+        return min(max(Double(position) / 1e9, 0), file.duration)
+    }
+
+    /// Pauses the shared file on every device, remembering where.
+    func pauseSharing() {
+        guard isFilePlaying else { return }
+        pausedPosition = Int64(filePosition * 1e9)
+        session.stopPlayback()
+    }
+
+    /// Plays the shared file again on every device: from where it was paused, or from the top
+    /// once it has finished.
+    func resumeSharing() {
+        guard let file = sharedFile, !isFilePlaying else { return }
+        let position = pausedPosition ?? 0
+        pausedPosition = nil
+        session.play(source: file.id, from: position)
+    }
+
+    /// Moves the shared file to `seconds` on every device; a paused file stays paused there.
+    func seekSharing(to seconds: Double) {
+        guard let file = sharedFile else { return }
+        let position = Int64(min(max(seconds, 0), file.duration) * 1e9)
+        if isFilePlaying {
+            session.play(source: file.id, from: position)
+        } else {
+            pausedPosition = position
+        }
+    }
+
     // MARK: - State
 
     /// Everything the app shows. Reading it registers with observation, so a change to any of
     /// it can be pushed to the app.
     var state: ServerState {
         var state = ServerState()
+        #if os(macOS)
         state.build = .current
+        #endif
         state.mode = mode
         state.deviceName = deviceName
         state.nearby = nearby
@@ -212,6 +321,7 @@ final class ShareCenter {
         if joined != nil {
             state.isPlaying = session.player.playback.isPlaying()
             state.channel = ServerState.Channel(session.player.channel)
+            state.joinedLayout = ServerState.Layout(session.remoteLayout)
             state.syncStatus = syncStatus
         }
         state.volume = session.player.volume
@@ -226,8 +336,10 @@ final class ShareCenter {
             }
         }
         state.layout = ServerState.Layout(session.speakerLayout)
+        #if os(macOS)
         state.applications = catalog.applications
         state.applicationsError = catalog.error
+        #endif
         return state
     }
 
@@ -242,9 +354,13 @@ final class ShareCenter {
     }
 
     private var shareProblem: String? {
+        #if os(macOS)
         if let error = session.applicationAudio.error { return error }
-        if session.isLoadingTrack { return "Loading…" }
+        #endif
+        if session.isLoadingTrack || playsWhenLoaded { return "Loading…" }
+        #if os(macOS)
         if session.applicationAudio.isWaitingForAudio { return "Waiting for audio…" }
+        #endif
         return nil
     }
 
@@ -313,9 +429,10 @@ final class ShareCenter {
     }
 
     private func updateAnnouncement() {
-        if playsWhenLoaded, session.selectedTrack != nil, !session.isLoadingTrack {
+        if playsWhenLoaded, !session.isLoadingTrack {
+            // Loading ended: play what loaded, or stop waiting if the file couldn't be read.
             playsWhenLoaded = false
-            session.playSelectedSource()
+            if session.selectedTrack != nil { session.playSelectedSource() }
         }
         guard let port = session.leaderPort else { return }
         var info = asyncmusic.ShareInfo()
@@ -326,8 +443,8 @@ final class ShareCenter {
         case .file: info.sourceKind = .file
         case nil: info.sourceKind = .unknown
         }
-        info.deviceKind = ThisMac.isLaptop ? .laptop : .desktop
-        info.model = std.string(ThisMac.model)
+        info.deviceKind = ThisDevice.kind
+        info.model = std.string(ThisDevice.model)
         info.clockPort = port
         info.listenerCount = UInt16(clamping: listeners.count)
         if let announcedInfo {
@@ -391,17 +508,38 @@ private extension ShareDeviceKind {
     }
 }
 
-/// What this Mac tells listeners about itself, so they can picture it.
-private enum ThisMac {
-    /// The model identifier, e.g. "Mac16,10".
+/// What this device tells listeners about itself, so they can picture it.
+private enum ThisDevice {
+    /// The model identifier, e.g. "Mac16,10" or "iPhone17,1", which a Mac turns into a picture
+    /// of the exact model.
     static let model: String = {
+        #if targetEnvironment(simulator)
+        if let simulated = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"] { return simulated }
+        #endif
+        // A Mac's model is hw.model; iOS keeps it in hw.machine.
+        #if os(macOS)
+        let name = "hw.model"
+        #else
+        let name = "hw.machine"
+        #endif
         var size = 0
-        guard sysctlbyname("hw.model", nil, &size, nil, 0) == 0, size > 0 else { return "" }
+        guard sysctlbyname(name, nil, &size, nil, 0) == 0, size > 0 else { return "" }
         var bytes = [CChar](repeating: 0, count: size)
-        guard sysctlbyname("hw.model", &bytes, &size, nil, 0) == 0 else { return "" }
+        guard sysctlbyname(name, &bytes, &size, nil, 0) == 0 else { return "" }
         return String(cString: bytes)
     }()
 
+    static var kind: asyncmusic.ShareDeviceKind {
+        #if os(macOS)
+        isLaptop ? .laptop : .desktop
+        #elseif os(iOS)
+        MainActor.assumeIsolated { UIDevice.current.userInterfaceIdiom == .pad ? .tablet : .phone }
+        #else
+        .unknown
+        #endif
+    }
+
+    #if os(macOS)
     /// Whether it runs on an internal battery: a MacBook.
     static let isLaptop: Bool = {
         guard let info = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
@@ -411,6 +549,7 @@ private enum ThisMac {
             return description?[kIOPSTypeKey] as? String == kIOPSInternalBatteryType
         }
     }()
+    #endif
 }
 
 extension asyncmusic.ShareInfo: @retroactive Equatable {}

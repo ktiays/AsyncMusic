@@ -7,12 +7,14 @@ import AppKit
 import SwiftUI
 
 /// The share alert when there's no menu bar icon to point at: a glass window in the middle of the
-/// screen in use. It never takes focus from the app in use, and keeps its center as the content
-/// grows or shrinks.
+/// screen in use. It never takes focus from the app in use, can be dragged anywhere by its
+/// background, and keeps its center as the content grows or shrinks.
 final class AlertWindow: NSPanel {
     private var center = NSPoint.zero
+    /// Set while the window moves itself to fit its content.
+    private var isFitting = false
 
-    init<Content: View>(@ViewBuilder content: () -> Content) {
+    init<Content: View>(cornerRadius: CGFloat, @ViewBuilder content: () -> Content) {
         // Titled, with the title bar hidden, so the window server gives it a standard window's
         // shadow, edge and corners; a borderless window only gets a shadow traced from its pixels.
         super.init(contentRect: NSRect(x: 0, y: 0, width: 360, height: 200), styleMask: [.titled, .fullSizeContentView, .nonactivatingPanel], backing: .buffered, defer: true)
@@ -26,7 +28,8 @@ final class AlertWindow: NSPanel {
         backgroundColor = .clear
         isOpaque = false
         hidesOnDeactivate = false
-        isMovable = false
+        isMovable = true
+        isMovableByWindowBackground = true
         animationBehavior = .none
         collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary, .transient, .ignoresCycle]
 
@@ -40,9 +43,28 @@ final class AlertWindow: NSPanel {
         hosting.sizingOptions = []
         // The hidden title bar would push the content down.
         hosting.safeAreaRegions = []
+        // Wherever it's dragged becomes the center it keeps while resizing.
+        NotificationCenter.default.addObserver(forName: NSWindow.didMoveNotification, object: self, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, !self.isFitting else { return }
+                self.center = NSPoint(x: self.frame.midX, y: self.frame.midY)
+            }
+        }
         let glass = NSGlassEffectView()
+        glass.cornerRadius = cornerRadius
         glass.contentView = hosting
         contentView = glass
+        setCornerRadius(cornerRadius)
+    }
+
+    /// Rounds the window itself (its edge, shadow and the window server's shape), which a titled
+    /// window otherwise draws at the system's 16 points. Private AppKit, skipped if it's gone.
+    private func setCornerRadius(_ radius: CGFloat) {
+        let selector = NSSelectorFromString("_setCornerRadius:")
+        guard let method = class_getInstanceMethod(NSWindow.self, selector),
+              let types = method_getTypeEncoding(method), String(cString: types).hasPrefix("v24@0:8d") else { return }
+        typealias Setter = @convention(c) (NSWindow, Selector, CGFloat) -> Void
+        unsafeBitCast(method_getImplementation(method), to: Setter.self)(self, selector, radius)
     }
 
     override var canBecomeKey: Bool { false }
@@ -84,6 +106,8 @@ final class AlertWindow: NSPanel {
         guard size.width > 0, size.height > 0 else { return }
         let rect = NSRect(x: round(center.x - size.width / 2), y: round(center.y - size.height / 2), width: size.width, height: size.height)
         guard rect != frame else { return }
+        isFitting = true
         setFrame(rect, display: true, animate: isVisible && alphaValue > 0)
+        isFitting = false
     }
 }

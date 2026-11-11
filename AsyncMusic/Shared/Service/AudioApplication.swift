@@ -3,11 +3,10 @@
 //  Copyright (c) 2026 ktiays. All rights reserved.
 //
 
-#if os(macOS)
 import Foundation
 
 /// An app whose audio can be shared: its processes that play audio, grouped by app. The server
-/// finds them (`AudioApplicationCatalog`); the app lists them.
+/// finds them (`AudioApplicationCatalog`); the app lists them. Only a Mac can share them.
 nonisolated struct AudioApplication: Identifiable, Equatable, Codable, Sendable {
     let id: String
     let name: String
@@ -16,4 +15,3 @@ nonisolated struct AudioApplication: Identifiable, Equatable, Codable, Sendable 
     let bundleIDs: [String]
     let isPlaying: Bool
 }
-#endif

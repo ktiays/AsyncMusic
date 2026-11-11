@@ -3,10 +3,10 @@
 //  Copyright (c) 2026 ktiays. All rights reserved.
 //
 
-#if os(macOS)
-import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
+#if os(macOS)
+import AppKit
 
 struct AppIcon: View {
     let url: URL?
@@ -20,6 +20,8 @@ struct AppIcon: View {
         }
     }
 }
+
+#endif
 
 /// The app's mark on a dark tile.
 struct AppGlyph: View {
@@ -43,22 +45,30 @@ struct DeviceIcon: View {
 
     var body: some View {
         Group {
+            #if os(macOS)
             if let image = Self.picture(forModel: share.model) {
                 Image(nsImage: image)
                     .resizable()
                     .interpolation(.high)
                     .scaledToFit()
             } else {
-                Image(systemName: symbol)
-                    .resizable()
-                    .scaledToFit()
-                    .fontWeight(.light)
-                    .foregroundStyle(.secondary)
-                    .padding(size * 0.12)
+                symbolImage
             }
+            #else
+            symbolImage
+            #endif
         }
         .frame(width: size, height: size)
         .accessibilityHidden(true)
+    }
+
+    private var symbolImage: some View {
+        Image(systemName: symbol)
+            .resizable()
+            .scaledToFit()
+            .fontWeight(.light)
+            .foregroundStyle(.secondary)
+            .padding(size * 0.12)
     }
 
     private var symbol: String {
@@ -71,6 +81,7 @@ struct DeviceIcon: View {
         }
     }
 
+    #if os(macOS)
     private static var pictures: [String: NSImage?] = [:]
 
     /// The system's icon for a model identifier such as "Mac16,10", if it knows the model.
@@ -82,6 +93,7 @@ struct DeviceIcon: View {
         pictures[model] = picture
         return picture
     }
+    #endif
 }
 
 /// What kind of source a share plays, on a tinted tile.
@@ -106,4 +118,3 @@ struct DeviceTile: View {
         }
     }
 }
-#endif

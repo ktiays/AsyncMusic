@@ -149,11 +149,19 @@ private struct NowPlayingCard: View {
                 }
                 .frame(maxWidth: 280)
                 Spacer(minLength: 0)
-                HStack(spacing: 6) {
-                    Text("Plays as").foregroundStyle(.secondary)
-                    Text(state.channel.title)
+                if state.joinedLayout == .stereoPair {
+                    HStack(spacing: 8) {
+                        Text("Channel").foregroundStyle(.secondary)
+                        ChannelPicker(state: state) { client.requestChannel($0) }
+                    }
+                    .fixedSize()
+                } else {
+                    HStack(spacing: 6) {
+                        Text("Plays as").foregroundStyle(.secondary)
+                        Text(state.channel.title)
+                    }
+                    .fixedSize()
                 }
-                .fixedSize()
                 SyncLabel(status: state.syncStatus).fixedSize()
             }
             .font(.callout)

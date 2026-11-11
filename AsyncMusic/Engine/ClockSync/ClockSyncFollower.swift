@@ -97,6 +97,8 @@ nonisolated final class ClockSyncFollower: @unchecked Sendable {
     private var speakersRevision: (session: UInt64, revision: UInt32)?
     private var lastSleepDuration = HostClock.sleepDuration()
     private var audioEndpoint: NWEndpoint?
+    private var requestedChannel = SpeakerChannel.full
+    private var channelRequest: UInt32 = 0
 
     init(endpoint: NWEndpoint, identity: DeviceIdentity, configuration: Configuration = Configuration()) {
         self.configuration = configuration
@@ -111,6 +113,17 @@ nonisolated final class ClockSyncFollower: @unchecked Sendable {
             onStateChange?(.connecting)
             connect()
             startRound()
+        }
+    }
+
+    /// Asks the leader to play `channel` of its layout here; repeated in every hello, applied once.
+    func requestChannel(_ channel: SpeakerChannel) {
+        queue.async { [self] in
+            requestedChannel = channel
+            channelRequest &+= 1
+            // 0 means no request.
+            if channelRequest == 0 { channelRequest = 1 }
+            sendHello()
         }
     }
 
@@ -286,7 +299,8 @@ nonisolated final class ClockSyncFollower: @unchecked Sendable {
     /// Sent outside the probe bursts so it never delays a ping.
     private func sendHello() {
         guard connectionReady, let connection else { return }
-        connection.send(content: ClockSyncMessage.hello(device: identity.id, name: identity.name).encoded(), completion: .idempotent)
+        let hello = ClockSyncMessage.hello(device: identity.id, name: identity.name, requestedChannel: requestedChannel, channelRequest: channelRequest)
+        connection.send(content: hello.encoded(), completion: .idempotent)
     }
 
     private func handleSpeakers(revision: UInt32, session: UInt64, layout: SpeakerLayout, channel: SpeakerChannel, switchLeaderTime: Int64) {

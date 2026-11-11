@@ -76,6 +76,7 @@ final class ServerDelegate: NSObject, NSApplicationDelegate {
         case let .setMode(mode): center.setMode(mode)
         case let .join(id): center.join(id)
         case .leave: center.leave()
+        case let .requestChannel(channel): center.requestChannel(channel)
         case .dismissAlerts: center.dismissAlerts()
         case let .setVolume(volume): center.setVolume(volume)
         case .refreshApplications: center.catalog.refresh()

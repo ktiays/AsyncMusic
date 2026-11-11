@@ -71,6 +71,8 @@ nonisolated final class ClockSyncLeader: @unchecked Sendable {
     var onMembersChange: (@Sendable ([Member]) -> Void)?
     /// Called when playback was stopped because this device slept and its clock jumped.
     var onPlaybackReset: (@Sendable () -> Void)?
+    /// A follower asked to play a channel (once per request it makes).
+    var onChannelRequest: (@Sendable (_ device: UInt64, _ channel: SpeakerChannel) -> Void)?
 
     private let queue = DispatchQueue(label: "me.ktiays.asyncmusic.clock-sync.leader", qos: .userInteractive)
     private var listener: NWListener?
@@ -87,6 +89,8 @@ nonisolated final class ClockSyncLeader: @unchecked Sendable {
     /// The device behind each connection, from its hellos.
     private var devices: [ObjectIdentifier: (id: UInt64, name: String)] = [:]
     private var reportedMembers: [Member] = []
+    /// The last channel request applied per connection, so its repeats are not.
+    private var channelRequests: [ObjectIdentifier: UInt32] = [:]
     private var layout = SpeakerLayout.everywhere
     private var channels: [UInt64: SpeakerChannel] = [:]
     private var channelSwitchTime: Int64 = 0
@@ -136,6 +140,7 @@ nonisolated final class ClockSyncLeader: @unchecked Sendable {
             connections = [:]
             lastHeard = [:]
             devices = [:]
+            channelRequests = [:]
             reportMembers()
             onFollowersChange?(0)
             onStateChange?(.stopped)
@@ -185,6 +190,7 @@ nonisolated final class ClockSyncLeader: @unchecked Sendable {
             connections.removeValue(forKey: id)?.cancel()
             lastHeard.removeValue(forKey: id)
             devices.removeValue(forKey: id)
+            channelRequests.removeValue(forKey: id)
             onFollowersChange?(connections.count)
         }
     }
@@ -306,6 +312,7 @@ nonisolated final class ClockSyncLeader: @unchecked Sendable {
                 connection?.cancel()
                 lastHeard.removeValue(forKey: id)
                 devices.removeValue(forKey: id)
+                channelRequests.removeValue(forKey: id)
                 if connections.removeValue(forKey: id) != nil {
                     onFollowersChange?(connections.count)
                     reportMembers()
@@ -335,8 +342,12 @@ nonisolated final class ClockSyncLeader: @unchecked Sendable {
                 let t2 = HostClock.now()
                 let pong = ClockSyncMessage.pong(sequence: sequence, session: session, t0: t0, t1: t1, t2: t2)
                 connection.send(content: pong.encoded(), completion: .idempotent)
-            case let .hello(device, name):
+            case let .hello(device, name, requestedChannel, channelRequest):
                 handleHello(device: device, name: name, connection: connection)
+                if channelRequest != 0, channelRequests[ObjectIdentifier(connection)] != channelRequest {
+                    channelRequests[ObjectIdentifier(connection)] = channelRequest
+                    onChannelRequest?(device, requestedChannel)
+                }
             default:
                 break
             }

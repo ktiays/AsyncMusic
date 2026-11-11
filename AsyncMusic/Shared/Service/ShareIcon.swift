@@ -3,9 +3,10 @@
 //  Copyright (c) 2026 ktiays. All rights reserved.
 //
 
+import SwiftUI
 #if os(macOS)
 import AppKit
-import SwiftUI
+#endif
 
 /// The app's mark: a music note between two pairs of arcs, on a grid 24 units tall and
 /// `gridWidth` wide, centred on x = 12. The arcs and the note's stem share one stroke width, so the
@@ -109,6 +110,7 @@ struct ShareIcon: View {
     }
 }
 
+#if os(macOS)
 enum MenuBarIcon {
     enum State: Equatable {
         case listening

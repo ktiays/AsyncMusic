@@ -53,7 +53,7 @@ struct MenuBarPanel: View {
         let state = client.state
         return [
             client.isRunning, String(describing: client.status), state.mode, state.isSharing,
-            state.joined?.id, state.nearbyOthers.map(\.id), state.listeners.map(\.id),
+            state.joined?.id, state.joinedLayout, state.nearbyOthers.map(\.id), state.listeners.map(\.id),
             state.applications.map(\.id), state.shareSource?.name, state.syncStatus.map { String(describing: $0) },
             state.isLocalNetworkDenied, state.discoveryError, pendingMode,
         ]
@@ -201,12 +201,7 @@ private struct JoinedCard: View {
                         Text(share.summary).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                     }
                     Spacer(minLength: 0)
-                    Text(channel.badge)
-                        .font(.caption.weight(.bold).monospaced())
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(.fill.tertiary, in: .capsule)
-                        .help(channel.title)
+                    ChannelBadge(channel: channel)
                 }
                 HStack(spacing: 8) {
                     Image(systemName: "speaker.fill").foregroundStyle(.secondary)
@@ -220,7 +215,7 @@ private struct JoinedCard: View {
             .background(.fill.quinary, in: .rect(cornerRadius: 14))
 
             PanelSection {
-                PanelRow("Plays as") { Text(channel.title).foregroundStyle(.secondary) }
+                ChannelRow(state: client.state) { client.requestChannel($0) }
                 Divider().padding(.leading, 12)
                 PanelRow("Sync") { SyncLabel(status: client.state.syncStatus) }
             }
@@ -233,27 +228,6 @@ private struct JoinedCard: View {
             .buttonStyle(.glass)
             .controlSize(.large)
         }
-    }
-}
-
-struct SyncLabel: View {
-    let status: SyncStatus?
-
-    var body: some View {
-        let (text, color): (String, Color) = switch status {
-        case .syncing: ("In sync", .green)
-        case .localNetworkDenied: ("No Local Network access", .red)
-        case .reconnecting: ("Reconnecting…", .orange)
-        case let .failed(message): (message, .red)
-        case .connecting, nil: ("Connecting…", .orange)
-        }
-        Label {
-            Text(text)
-        } icon: {
-            Circle().fill(color).frame(width: 7, height: 7)
-        }
-        .foregroundStyle(.secondary)
-        .lineLimit(1)
     }
 }
 
@@ -472,27 +446,6 @@ private struct ModeSwitchConfirmation: View {
 
 }
 
-/// What to ask before a mode switch that ends a share being listened to or given.
-struct ModeSwitchPrompt {
-    let mode: ShareMode
-    let state: ServerState
-
-    var title: String {
-        mode == .share ? "Start sharing from this Mac?" : "Stop sharing?"
-    }
-
-    var message: String {
-        if mode == .share {
-            return "You’ll stop listening to \(state.joined?.name ?? "the share"). A Mac either listens or shares, not both at once."
-        }
-        let count = state.listeners.count
-        return count == 0 ? "Listening ends this share." : "\(count) \(count == 1 ? "device" : "devices") listening to you will be disconnected."
-    }
-
-    var keepTitle: String { mode == .share ? "Keep Listening" : "Keep Sharing" }
-    var switchTitle: String { mode == .share ? "Leave and Share" : "Stop and Listen" }
-}
-
 // MARK: - Service
 
 /// In place of everything else while AsyncMusic Server isn't running.
@@ -548,91 +501,11 @@ private struct ServiceUnavailable: View {
     }
 }
 
-// MARK: - Problems
-
-struct NetworkProblems: View {
-    let state: ServerState
-
-    var body: some View {
-        if state.isLocalNetworkDenied {
-            Notice(systemImage: "network.slash", text: "Local Network access is off for AsyncMusic Server. Turn it on in System Settings › Privacy & Security › Local Network.")
-        } else if let error = state.discoveryError {
-            Notice(systemImage: "exclamationmark.triangle", text: error)
-        }
-    }
-}
-
-struct Notice: View {
-    let systemImage: String
-    let text: String
-
-    var body: some View {
-        Label {
-            Text(text).fixedSize(horizontal: false, vertical: true)
-        } icon: {
-            Image(systemName: systemImage).foregroundStyle(.orange)
-        }
-        .font(.callout)
-        .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.orange.opacity(0.12), in: .rect(cornerRadius: 12))
-    }
-}
-
 // MARK: - Building blocks
 
 extension EnvironmentValues {
     /// Closes the menu the panel is in, before something else needs the screen.
     @Entry var dismissMenuBarPanel: () -> Void = {}
-}
-
-/// A titled group of rows, like a grouped form section.
-struct PanelSection<Content: View>: View {
-    var title: String?
-    @ViewBuilder var content: Content
-
-    init(_ title: String? = nil, @ViewBuilder content: () -> Content) {
-        self.title = title
-        self.content = content()
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if let title {
-                Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(.secondary).padding(.horizontal, 6)
-            }
-            VStack(spacing: 0) { content }
-                .background(.fill.quinary, in: .rect(cornerRadius: 14))
-        }
-    }
-}
-
-/// A label on the left and a control or value on the right.
-struct PanelRow<Leading: View, Trailing: View>: View {
-    @ViewBuilder var leading: Leading
-    @ViewBuilder var trailing: Trailing
-
-    init(@ViewBuilder leading: () -> Leading, @ViewBuilder trailing: () -> Trailing) {
-        self.leading = leading()
-        self.trailing = trailing()
-    }
-
-    var body: some View {
-        HStack(spacing: 12) {
-            leading
-            Spacer(minLength: 8)
-            trailing
-        }
-        .frame(minHeight: 22)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-    }
-}
-
-extension PanelRow where Leading == Text {
-    init(_ title: String, @ViewBuilder trailing: () -> Trailing) {
-        self.init(leading: { Text(title) }, trailing: trailing)
-    }
 }
 
 /// A selectable row in a source list.

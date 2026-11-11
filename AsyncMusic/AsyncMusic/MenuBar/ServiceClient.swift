@@ -144,6 +144,10 @@ final class ServiceClient {
         send(.leave)
     }
 
+    func requestChannel(_ channel: ServerState.Channel) {
+        send(.requestChannel(channel))
+    }
+
     /// The volume the slider shows: the one just set, until the server confirms it.
     var volume: Float {
         if let pendingVolume, Date.now.timeIntervalSince(pendingVolume.date) < 1 { return pendingVolume.value }

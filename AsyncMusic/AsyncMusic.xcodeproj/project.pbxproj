@@ -71,6 +71,7 @@
 				Playback/FileStreamFeeder.swift = (ios, xros, );
 				Playback/MediaFile.swift = (ios, xros, );
 				Playback/SyncedPlayer.swift = (ios, xros, );
+				Share/ShareCenter.swift = (ios, xros, );
 				Streaming/ALACCodec.swift = (ios, xros, );
 				Streaming/AudioStreamClient.swift = (ios, xros, );
 				Streaming/AudioStreamMessage.swift = (ios, xros, );
@@ -82,11 +83,12 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			platformFiltersByRelativePath = {
 				ContentView.swift = (ios, xros, );
-				UI/AudioApplicationPicker.swift = (ios, xros, );
-				UI/Components.swift = (ios, xros, );
-				UI/HostView.swift = (ios, xros, );
-				UI/JoinView.swift = (ios, xros, );
-				UI/WelcomeView.swift = (ios, xros, );
+				NowPlayingController.swift = (ios, xros, );
+				ShareNotifications.swift = (ios, xros, );
+				UI/HomeView.swift = (ios, xros, );
+				UI/ListenView.swift = (ios, xros, );
+				UI/SettingsView.swift = (ios, xros, );
+				UI/ShareView.swift = (ios, xros, );
 			};
 			target = ED81851B30812036006FD72C /* AsyncMusic */;
 		};

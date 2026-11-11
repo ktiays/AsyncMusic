@@ -3,13 +3,16 @@
 //  Copyright (c) 2026 ktiays. All rights reserved.
 //
 
-#if os(macOS)
 import Foundation
+#if canImport(UIKit)
+import UIKit
+#endif
 
 // What AsyncMusic Server and the menu bar app say to each other. The app sends commands; the
 // server answers every change with its whole state, which is small enough to send each time.
+// iPhone, iPad and Vision Pro run the share model in the app itself and show the same state.
 
-/// Whether this Mac listens for shares or shares its own audio. A Mac does one or the other.
+/// Whether this device listens for shares or shares its own audio. It does one or the other.
 nonisolated enum ShareMode: String, CaseIterable, Identifiable, Codable, Sendable {
     case listen = "Listen"
     case share = "Share"
@@ -63,13 +66,13 @@ nonisolated struct NearbyShare: Identifiable, Equatable, Codable, Sendable {
         switch sourceKind {
         case .application: "App audio"
         case .file: "Audio file"
-        case .system: "Mac audio"
+        case .system: "Computer audio"
         case .unknown: "Audio"
         }
     }
 }
 
-/// What this Mac shares.
+/// What this device shares.
 nonisolated enum ShareSource: Equatable, Codable, Sendable {
     case application(AudioApplication)
     case file(URL)
@@ -95,7 +98,7 @@ nonisolated enum SyncStatus: Equatable, Codable, Sendable {
     case failed(String)
 }
 
-/// A device listening to this Mac's share.
+/// A device listening to this device's share.
 nonisolated struct ShareListener: Identifiable, Equatable, Codable, Sendable {
     var id: UInt64
     var name: String
@@ -119,7 +122,7 @@ nonisolated struct ServiceSettings: Equatable, Codable, Sendable {
         }
     }
 
-    /// The name other devices see. Empty means the Mac's own name.
+    /// The name other devices see. Empty means the device's own name.
     var customDeviceName = ""
     var alertBehavior = AlertBehavior.showAlert
 
@@ -128,9 +131,16 @@ nonisolated struct ServiceSettings: Equatable, Codable, Sendable {
         return trimmed.isEmpty ? Self.systemDeviceName : trimmed
     }
 
-    static var systemDeviceName: String { Host.current().localizedName ?? "Mac" }
+    static var systemDeviceName: String {
+        #if os(macOS)
+        Host.current().localizedName ?? "Mac"
+        #else
+        MainActor.assumeIsolated { DeviceIdentity.systemName }
+        #endif
+    }
 }
 
+#if os(macOS)
 /// Which copy and build of AsyncMusic Server is running. The server outlives the app that started
 /// it, so after the app is updated or rebuilt, or another copy of it starts, the server running
 /// can be an old build or another copy's; the app checks this against the server it carries.
@@ -154,9 +164,14 @@ nonisolated struct ServerBuild: Equatable, Codable, Sendable {
     }
 }
 
-/// Everything the app shows, as the server sees it.
+#endif
+
+/// Everything the app shows, as the server sees it (on a Mac) or as the app's own share model
+/// does (elsewhere).
 nonisolated struct ServerState: Equatable, Codable, Sendable {
+    #if os(macOS)
     var build: ServerBuild?
+    #endif
     var mode = ShareMode.listen
     var deviceName = ""
     var nearby: [NearbyShare] = []
@@ -171,6 +186,8 @@ nonisolated struct ServerState: Equatable, Codable, Sendable {
     var joined: NearbyShare?
     var isPlaying = false
     var channel = Channel.full
+    /// The joined share's layout: in a stereo pair, this device picks Left or Right.
+    var joinedLayout = Layout.everywhere
     var volume: Float = 1
     var syncStatus: SyncStatus?
 
@@ -213,7 +230,7 @@ nonisolated struct ServerState: Equatable, Codable, Sendable {
 
         var title: String {
             switch self {
-            case .full: "Full Mix"
+            case .full: "Both Channels"
             case .left: "Left"
             case .right: "Right"
             }
@@ -230,6 +247,7 @@ nonisolated struct ServerState: Equatable, Codable, Sendable {
     }
 }
 
+#if os(macOS)
 /// What the app asks the server to do.
 nonisolated enum ServerCommand: Codable, Sendable {
     case updateSettings(ServiceSettings)
@@ -241,6 +259,8 @@ nonisolated enum ServerCommand: Codable, Sendable {
     case setMode(ShareMode)
     case join(UInt64)
     case leave
+    /// Listening to a stereo pair: play this channel here (`left` or `right`).
+    case requestChannel(ServerState.Channel)
     case dismissAlerts
     case setVolume(Float)
 
