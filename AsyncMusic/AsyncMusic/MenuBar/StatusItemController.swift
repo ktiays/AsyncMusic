@@ -6,6 +6,7 @@
 #if os(macOS)
 import AppKit
 import Observation
+import OSLog
 import SwiftUI
 
 /// Owns the menu bar icon and its menu: an `NSMenu` whose only item is the panel
@@ -15,6 +16,8 @@ import SwiftUI
 /// Alerts for new shares are AsyncMusic Server's, so they also appear when the app isn't
 /// running; the controller tells the server where the icon is, so they can point at it, and
 /// when the panel is open, which lists new shares in their place.
+///
+/// A right-click (or Control-click) on the icon opens a small menu instead, with Settings and Quit.
 ///
 /// The icon can be hidden (`isVisible`), for an app that runs as an ordinary windowed app; the
 /// user can also ⌘-drag it out of the menu bar, which `onRemove` reports.
@@ -38,11 +41,23 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         let menu = NSMenu()
         menu.autoenablesItems = false
         menu.delegate = self
-        let item = NSMenuItem()
-        item.view = panelView
-        menu.addItem(item)
+        menu.addItem(panelItem)
         return menu
     }()
+    private lazy var panelItem: NSMenuItem = {
+        let item = NSMenuItem()
+        item.view = panelView
+        return item
+    }()
+    /// What the menu shows instead of the panel on a right-click.
+    private lazy var contextItems: [NSMenuItem] = {
+        let settings = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
+        settings.target = self
+        let quit = NSMenuItem(title: "Quit AsyncMusic", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        quit.target = NSApp
+        return [settings, .separator(), quit]
+    }()
+    private let log = Logger(subsystem: AsyncMusicService.appBundleIdentifier, category: "StatusItem")
     private static let panelWidth: CGFloat = 340
     private var isPanelOpen = false
     private var iconObservers: [NSObjectProtocol] = []
@@ -150,7 +165,24 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         menu.cancelTracking()
     }
 
+    /// Fills the menu for the click opening it: the context menu for a right-click or
+    /// Control-click, the panel otherwise.
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        let event = NSApp.currentEvent
+        let isContextClick = switch event?.type {
+        case .rightMouseDown, .rightMouseUp: true
+        case .leftMouseDown, .leftMouseUp: event?.modifierFlags.contains(.control) == true
+        default: false
+        }
+        log.debug("Menu opening for event \(String(describing: event?.type), privacy: .public); context menu: \(isContextClick)")
+        let items = isContextClick ? contextItems : [panelItem]
+        guard menu.items != items else { return }
+        menu.removeAllItems()
+        for item in items { menu.addItem(item) }
+    }
+
     func menuWillOpen(_ menu: NSMenu) {
+        guard menu.items.first === panelItem else { return }
         isPanelOpen = true
         panelView.sizeToFitContent()
         client.setPanelVisible(true)
@@ -158,8 +190,28 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     }
 
     func menuDidClose(_ menu: NSMenu) {
+        guard isPanelOpen else { return }
         isPanelOpen = false
         client.setPanelVisible(false)
+    }
+
+    /// Opens Settings through the app menu's Settings item, the SwiftUI scene's own command; AppKit
+    /// has no other way into a SwiftUI window.
+    @objc private func openSettings() {
+        // Activate first, so the window comes to the front.
+        NSApp.activate()
+        guard let appMenu = NSApp.mainMenu?.items.first?.submenu,
+              let index = appMenu.items.firstIndex(where: { $0.keyEquivalent == "," && $0.keyEquivalentModifierMask == .command }) else {
+            log.error("No Settings item in the app menu")
+            return
+        }
+        appMenu.performActionForItem(at: index)
+        // macOS may not hand the app the focus (activation is up to the app in use), and the
+        // window would then open behind that app's windows.
+        DispatchQueue.main.async {
+            let window = NSApp.windows.first { $0.isVisible && $0.identifier?.rawValue.hasPrefix(SettingsSectionID.windowID) == true }
+            if let window, !window.isKeyWindow { window.orderFrontRegardless() }
+        }
     }
 
     func openDiagnostics() {
