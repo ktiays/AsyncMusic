@@ -11,7 +11,9 @@
 //
 //     test_follower 127.0.0.1 <port>
 //
-// Usage: test_follower <host> <port> [--seconds N]
+// Usage: test_follower <host> <port> [--seconds N] [--channel left|right]
+//
+// --channel asks the leader for that side of a stereo pair, once syncing.
 
 #include <asyncmusic/host_clock.hpp>
 #include <asyncmusic/session.hpp>
@@ -28,7 +30,7 @@ using namespace asyncmusic;
 
 int main(int argc, char** argv) {
     if (argc < 3) {
-        std::printf("Usage: test_follower <host> <port> [--seconds N]\n");
+        std::printf("Usage: test_follower <host> <port> [--seconds N] [--channel left|right]\n");
         return 1;
     }
     const auto address = net::Address::fromString(argv[1], static_cast<uint16_t>(std::atoi(argv[2])));
@@ -37,8 +39,13 @@ int main(int argc, char** argv) {
         return 1;
     }
     double seconds = 0;
+    std::optional<SpeakerChannel> channel;
     for (int i = 3; i < argc; ++i) {
         if (std::strcmp(argv[i], "--seconds") == 0 && i + 1 < argc) seconds = std::atof(argv[++i]);
+        else if (std::strcmp(argv[i], "--channel") == 0 && i + 1 < argc) {
+            const char* side = argv[++i];
+            channel = std::strcmp(side, "left") == 0 ? SpeakerChannel::left : SpeakerChannel::right;
+        }
     }
 
     GroupSession session(DeviceIdentity{0x7E57'0000'0000'0000ull | std::random_device()(), "Test Follower"});
@@ -63,6 +70,10 @@ int main(int argc, char** argv) {
     while (seconds <= 0 || std::chrono::steady_clock::now() - start < std::chrono::duration<double>(seconds)) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
         const auto state = session.snapshot();
+        if (channel && state.followerState == ClockSyncFollower::State::syncing && state.remoteLayout == SpeakerLayout::stereoPair) {
+            session.requestChannel(*channel);
+            channel.reset();
+        }
         if (state.log.size() < printed) printed = 0;
         for (; printed < state.log.size(); ++printed) std::printf("  | %s\n", state.log[printed].text.c_str());
         const RenderStats stats = session.renderer().latestStats();

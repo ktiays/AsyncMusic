@@ -13,6 +13,7 @@
 #include <asyncmusic/net.hpp>
 #include <asyncmusic/serial_queue.hpp>
 #include <asyncmusic/session.hpp>
+#include <asyncmusic/share_center.hpp>
 #include <asyncmusic/share_discovery.hpp>
 
 #include <algorithm>
@@ -404,7 +405,8 @@ void protocolMatchesGoldenBytes() {
         {ClockSyncMessage::makePong(7, 0xDEADBEEF00000001ull, 1, 2, 3).encode(), "534101020700000001000000efbeadde010000000000000002000000000000000300000000000000"},
         {ClockSyncMessage::makePlayback(9, 0xABCD, state).encode(), "5341010309000000cdab0000000000008877665544332211cb04fb711f010000d6ffffffffffffff"},
         {ClockSyncMessage::makeAudioPort(0x55, 50829).encode(), "534101040000000055000000000000008dc6"},
-        {ClockSyncMessage::makeHello(0x0102, Bytes{'a', 'b'}).encode(), "53410105000000000201000000000000026162"},
+        {ClockSyncMessage::makeHello(0x0102, Bytes{'a', 'b'}).encode(), "534101050000000002010000000000000261620000000000"},
+        {ClockSyncMessage::makeHello(0x0102, Bytes{'a', 'b'}, SpeakerChannel::left, 7).encode(), "534101050000000002010000000000000261620107000000"},
         {ClockSyncMessage::makeSpeakers(3, 0xAB, SpeakerLayout::stereoPair, SpeakerChannel::right, -1).encode(), "5341010603000000ab000000000000000102ffffffffffffffff"},
         {AudioStreamMessage::makeStreamStart(0x0A0B, 0x0C0D, 44100, 12345, AudioStreamCodec::alac, Bytes{1, 2, 3}).framed(), "27000000010b0a0000000000000d0c000000000000000000008088e5403930000000000000010300010203"},
         {AudioStreamMessage::makeAudio(1, -3, 2, Bytes{9, 8, 7, 6, 5, 4, 3, 2}).framed(), "1d000000020100000000000000fdffffffffffffff020000000908070605040302"},
@@ -433,7 +435,8 @@ void protocolRoundTrips() {
     bytes = ClockSyncMessage::makeHello(42, Bytes(300, 'x')).encode();
     CHECK(ClockSyncMessage::decode(bytes.data(), bytes.size(), message), "hello decode");
     CHECK(message.type == ClockSyncMessage::Type::hello && message.device == 42 && message.name.size() == 255, "hello fields, name cut to 255");
-    bytes.pop_back();
+    // Past the optional request (5 bytes) and into the name.
+    bytes.resize(bytes.size() - 6);
     CHECK(!ClockSyncMessage::decode(bytes.data(), bytes.size(), message), "truncated hello rejected");
     bytes = ClockSyncMessage::makeSpeakers(7, 8, SpeakerLayout::stereoPair, SpeakerChannel::left, 123).encode();
     CHECK(ClockSyncMessage::decode(bytes.data(), bytes.size(), message), "speakers decode");
@@ -1063,6 +1066,15 @@ void sessionLeadsFollower() {
             && stored->assignments.at(SpeakerChannel::right) == 1, "settings stored");
     }
 
+    // The follower (left after the swap) picks Right: it gets it, and the leader takes Left.
+    follower.requestChannel(SpeakerChannel::right);
+    CHECK(waitUntil([&] { return follower.snapshot().channel == SpeakerChannel::right && leader.snapshot().channel == SpeakerChannel::left; }, 5), "follower chose Right");
+    // Its request rides on every hello; repeats must not undo a later change by the leader.
+    leader.swapChannels();
+    CHECK(waitUntil([&] { return follower.snapshot().channel == SpeakerChannel::left; }, 5), "leader swapped again");
+    std::this_thread::sleep_for(std::chrono::milliseconds(2500));
+    CHECK(follower.snapshot().channel == SpeakerChannel::left, "a repeated request is applied once");
+
     leader.stopPlayback();
     CHECK(waitUntil([&] { return !follower.snapshot().playback.isPlaying(); }, 5), "stopped everywhere");
 }
@@ -1366,6 +1378,71 @@ void shareDiscoveryModesExclude() {
 
 }  // namespace
 
+/// A sharer and a listener on loopback, through the whole Listen/Share flow: announce, alert,
+/// join, listener count, and leaving by itself when the share ends.
+void shareCenterFlow() {
+    const SharePair pair;
+    GroupSession sharerSession(DeviceIdentity{11, "Sharer"});
+    GroupSession listenerSession(DeviceIdentity{12, "Listener"});
+    ShareCenter::Device phone{ShareDeviceKind::phone, "Pixel 10 Pro"};
+    ShareCenter sharer(sharerSession, phone, {}, pair.configuration(true));
+    ShareCenter listener(listenerSession, ShareCenter::Device{}, {}, pair.configuration(false));
+    std::atomic<int> alerts{0};
+    listener.onAlert = [&](const ShareCenter::Share&) { ++alerts; };
+    sharer.start();
+    listener.start();
+
+    CHECK(waitUntil([&] { return sharer.state().revision > 0 && listener.state().revision > 0; }, 2), "published");
+    CHECK(sharer.state().mode == ShareCenter::Mode::listen && listener.state().nearby.empty(), "starts listening");
+
+    sharer.selectSource({"Song", ShareSourceKind::file});
+    sharer.startSharing();
+    CHECK(waitUntil([&] { return listener.state().alerts.size() == 1; }, 5), "alert raised");
+    auto state = listener.state();
+    CHECK(alerts == 1 && state.nearby.size() == 1, "alerts %d nearby %zu", alerts.load(), state.nearby.size());
+    if (state.nearby.empty()) return;
+    const ShareCenter::Share share = state.nearby.front();
+    CHECK(share.info.name == "Sharer" && share.info.source == "Song" && share.info.sourceKind == ShareSourceKind::file, "details");
+    CHECK(share.info.deviceKind == ShareDeviceKind::phone && share.info.model == "Pixel 10 Pro", "device");
+    CHECK(share.summary() == "Song", "summary %s", share.summary().c_str());
+    const auto sharing = sharer.state();
+    CHECK(sharing.mode == ShareCenter::Mode::share && sharing.isSharing && sharing.shareProblem == "Loading\xE2\x80\xA6", "sharing");
+
+    listener.join(share.id);
+    CHECK(waitUntil([&] {
+        const auto state = listener.state();
+        return state.joined && state.syncStatus == ShareCenter::SyncStatus::syncing && state.alerts.empty();
+    }, 10), "joined and syncing");
+    CHECK(waitUntil([&] { return sharer.state().listeners.size() == 1; }, 10), "sharer sees its listener");
+    CHECK(waitUntil([&] {
+        const auto state = listener.state();
+        return state.joined && state.joined->info.listenerCount == 1 && state.joined->summary() == "Song \xC2\xB7 1 listening";
+    }, 10), "listener count announced");
+    CHECK(listener.state().switchInterrupts(ShareCenter::Mode::share), "switching would interrupt");
+
+    sharer.stopSharing();
+    CHECK(waitUntil([&] {
+        const auto state = listener.state();
+        return !state.joined && state.nearby.empty() && listenerSession.snapshot().role == GroupSession::Role::off;
+    }, 20), "left when the share ended");
+    CHECK(!sharer.state().isSharing && sharerSession.snapshot().role == GroupSession::Role::off, "sharer stopped");
+}
+
+/// Hellos from followers that predate channel requests still decode (with no request), and a
+/// request survives the round trip.
+void helloChannelRequests() {
+    const uint8_t old[] = {0x53, 0x41, 0x01, 0x05, 0, 0, 0, 0, 0x02, 0x01, 0, 0, 0, 0, 0, 0, 0x02, 'a', 'b'};
+    ClockSyncMessage message;
+    CHECK(ClockSyncMessage::decode(old, sizeof old, message), "old hello decodes");
+    CHECK(message.device == 0x0102 && message.name == (Bytes{'a', 'b'}) && message.channelRequest == 0, "old hello has no request");
+    const Bytes encoded = ClockSyncMessage::makeHello(9, Bytes{'x'}, SpeakerChannel::right, 3).encode();
+    CHECK(ClockSyncMessage::decode(encoded.data(), encoded.size(), message), "new hello decodes");
+    CHECK(message.name == (Bytes{'x'}) && message.requestedChannel == SpeakerChannel::right && message.channelRequest == 3, "request kept");
+    Bytes bad = encoded;
+    bad[bad.size() - 5] = 9;  // A channel from a newer version: no request, hello still valid.
+    CHECK(ClockSyncMessage::decode(bad.data(), bad.size(), message) && message.channelRequest == 0, "unknown channel ignored");
+}
+
 int main() {
     run("clock map inverse", clockMapInverse);
     run("estimator: clean link", estimatorCleanLink);
@@ -1401,6 +1478,8 @@ int main() {
     run("share: answers queries", shareDiscoveryAnswersQueries);
     run("share: survives loss", shareDiscoverySurvivesLoss);
     run("share: listen or share", shareDiscoveryModesExclude);
+    run("share center: listen, join, leave", shareCenterFlow);
+    run("protocol: hello channel requests", helloChannelRequests);
     std::printf("%s\n", failures == 0 ? "All tests passed." : "Some tests FAILED.");
     return failures == 0 ? 0 : 1;
 }

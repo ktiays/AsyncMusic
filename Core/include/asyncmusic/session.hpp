@@ -149,6 +149,9 @@ public:
     void setIdentity(DeviceIdentity identity);
     /// Follows the leader called `name`, found by `resolver` (an mDNS lookup, typically).
     void follow(const std::string& name, ClockSyncFollower::Resolver resolver);
+    /// Follower: asks the leader to play `channel` of its layout on this device. The leader
+    /// gives it the channel, and the device that had it trades places with this one.
+    void requestChannel(SpeakerChannel channel);
     void clearLog();
 
     // Leader

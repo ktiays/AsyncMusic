@@ -38,6 +38,7 @@ constexpr size_t kClockSyncMaximumNameLength = 255;
 ///     playback:  header(sequence = revision) session(8) source(8) startLeaderTime(8) startMediaTime(8)
 ///     audioPort: header(sequence unused) session(8) port(2)
 ///     hello:     header(sequence unused) device(8) nameLength(1) name(nameLength, UTF-8)
+///                [requestedChannel(1) channelRequest(4)]
 ///     speakers:  header(sequence = revision) session(8) layout(1) channel(1) switchLeaderTime(8)
 ///
 /// `session` identifies one run of the leader's timeline; a new value means followers must
@@ -50,6 +51,11 @@ constexpr size_t kClockSyncMaximumNameLength = 255;
 /// channel that follower plays from leader time `switchLeaderTime` on, so all devices switch
 /// together. Like playback it is repeated, with its own revision. Devices that predate a
 /// message type, or a layout or channel value, reject the datagram and keep playing the full mix.
+///
+/// The bracketed hello fields were appended later (older leaders ignore them; an older
+/// follower's hello ends before them): a follower asking to play a channel of the layout.
+/// `channelRequest` numbers its requests (0: none); the leader acts once per new number, so a
+/// request repeated in every hello is applied only once.
 struct ClockSyncMessage {
     enum class AM_CLOSED_ENUM Type : uint8_t {
         ping = 1,
@@ -72,6 +78,9 @@ struct ClockSyncMessage {
     /// `hello`: the follower's stable ID and its display name (UTF-8).
     uint64_t device = 0;
     Bytes name;
+    /// `hello`: the channel the follower asks for, and which of its requests this is (0: none).
+    SpeakerChannel requestedChannel = SpeakerChannel::full;
+    uint32_t channelRequest = 0;
     /// `speakers`
     SpeakerLayout layout = SpeakerLayout::everywhere;
     SpeakerChannel channel = SpeakerChannel::full;
@@ -81,7 +90,7 @@ struct ClockSyncMessage {
     static ClockSyncMessage makePong(uint32_t sequence, uint64_t session, int64_t t0, int64_t t1, int64_t t2);
     static ClockSyncMessage makePlayback(uint32_t revision, uint64_t session, const PlaybackState& playback);
     static ClockSyncMessage makeAudioPort(uint64_t session, uint16_t port);
-    static ClockSyncMessage makeHello(uint64_t device, const Bytes& name);
+    static ClockSyncMessage makeHello(uint64_t device, const Bytes& name, SpeakerChannel requestedChannel = SpeakerChannel::full, uint32_t channelRequest = 0);
     static ClockSyncMessage makeSpeakers(uint32_t revision, uint64_t session, SpeakerLayout layout, SpeakerChannel channel, int64_t switchLeaderTime);
 
     Bytes encode() const;

@@ -190,6 +190,15 @@ void GroupSession::setIdentity(DeviceIdentity identity) {
     });
 }
 
+void GroupSession::requestChannel(SpeakerChannel channel) {
+    queue_.async([this, channel] {
+        if (!follower_) return;
+        follower_->requestChannel(channel);
+        append(channel == SpeakerChannel::left ? "Asked to play Left" : "Asked to play Right");
+        publish();
+    });
+}
+
 void GroupSession::follow(const std::string& name, ClockSyncFollower::Resolver resolver) {
     queue_.async([this, name, resolver = std::move(resolver)]() mutable {
         {
@@ -289,6 +298,25 @@ void GroupSession::startLeading() {
             player_.setPlayback(PlaybackState::stopped());
             append("This device slept; playback stopped and followers will resync");
             publish();
+        });
+    };
+    leader->onChannelRequest = [this, post](uint64_t device, SpeakerChannel channel) {
+        post([this, device, channel] {
+            SpeakerLayout layout;
+            std::string name;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                layout = state_.speakers.layout;
+                name = state_.nameOfDevice(device).value_or("A follower");
+            }
+            bool inLayout = false;
+            for (int index = 0; index < speakerLayoutChannelCount(layout); ++index) {
+                if (speakerLayoutChannel(layout, index) == channel) inLayout = true;
+            }
+            // Only the layout's own channels can be chosen; the full mix is everyone else's.
+            if (!inLayout) return;
+            append(name + (channel == SpeakerChannel::left ? " chose Left" : " chose Right"));
+            assign(device, channel);
         });
     };
     leader->onFollowersChange = [this, post](int count) {

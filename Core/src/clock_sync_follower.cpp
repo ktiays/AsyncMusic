@@ -172,11 +172,20 @@ void ClockSyncFollower::finishRound(int round) {
     queue_.asyncAfter(interval, [this] { startRound(); });
 }
 
+void ClockSyncFollower::requestChannel(SpeakerChannel channel) {
+    queue_.async([this, channel] {
+        requestedChannel_ = channel;
+        // 0 means no request.
+        if (++channelRequest_ == 0) channelRequest_ = 1;
+        sendHello();
+    });
+}
+
 /// Sent outside the probe bursts so it never delays a ping.
 void ClockSyncFollower::sendHello() {
     if (!connection_) return;
     const std::string name = utf8Prefix(identity_.name, kClockSyncMaximumNameLength);
-    const Bytes hello = ClockSyncMessage::makeHello(identity_.id, Bytes(name.begin(), name.end())).encode();
+    const Bytes hello = ClockSyncMessage::makeHello(identity_.id, Bytes(name.begin(), name.end()), requestedChannel_, channelRequest_).encode();
     connection_->socket.send(hello.data(), hello.size());
 }
 

@@ -44,6 +44,7 @@ add_library(asyncmusic_core
     src/renderer.cpp
     src/serial_queue.cpp
     src/session.cpp
+    src/share_center.cpp
     src/share_discovery.cpp
     src/speakers.cpp
     src/stream_buffer.cpp

@@ -126,6 +126,10 @@ void ClockSyncLeader::heard(const net::Address& from, int64_t time, const ClockS
         peer->second.name = name;
         reportMembers();
     }
+    if (message.channelRequest != 0 && message.channelRequest != peer->second.channelRequest) {
+        peer->second.channelRequest = message.channelRequest;
+        if (onChannelRequest) onChannelRequest(message.device, message.requestedChannel);
+    }
     sendPlayback(from);
     sendSpeakers(peer->second, 2 * kDatagramSpacing);
 }

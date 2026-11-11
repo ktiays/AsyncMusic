@@ -115,6 +115,9 @@ public:
     void start();
     /// Stops and waits for the follower's threads.
     void stop();
+    /// Asks the leader to play `channel` of its layout here (in every hello from now on; the
+    /// leader applies each request once).
+    void requestChannel(SpeakerChannel channel);
 
 private:
     struct Connection;
@@ -135,6 +138,8 @@ private:
     SerialQueue queue_;
     // Everything below is confined to `queue_`.
     std::unique_ptr<Connection> connection_;
+    SpeakerChannel requestedChannel_ = SpeakerChannel::full;
+    uint32_t channelRequest_ = 0;
     uint64_t connectionCount_ = 0;
     bool running_ = false;
     int silentRounds_ = 0;
@@ -194,6 +199,8 @@ public:
     std::function<void(const std::vector<Member>& members)> onMembersChange;
     /// Playback was stopped because this device slept and its clock jumped.
     std::function<void()> onPlaybackReset;
+    /// A follower asked to play `channel` (once per request it makes).
+    std::function<void(uint64_t device, SpeakerChannel channel)> onChannelRequest;
 
     void start();
     /// Stops and waits for the leader's threads.
@@ -217,6 +224,8 @@ private:
         bool hasDevice = false;
         uint64_t device = 0;
         std::string name;
+        /// The last channel request applied, so its repeats are not.
+        uint32_t channelRequest = 0;
     };
 
     void listen();

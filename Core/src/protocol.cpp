@@ -100,11 +100,13 @@ ClockSyncMessage ClockSyncMessage::makeAudioPort(uint64_t session, uint16_t port
     return message;
 }
 
-ClockSyncMessage ClockSyncMessage::makeHello(uint64_t device, const Bytes& name) {
+ClockSyncMessage ClockSyncMessage::makeHello(uint64_t device, const Bytes& name, SpeakerChannel requestedChannel, uint32_t channelRequest) {
     ClockSyncMessage message;
     message.type = Type::hello;
     message.device = device;
     message.name = Bytes(name.begin(), name.begin() + static_cast<std::ptrdiff_t>(std::min(name.size(), kClockSyncMaximumNameLength)));
+    message.requestedChannel = requestedChannel;
+    message.channelRequest = channelRequest;
     return message;
 }
 
@@ -152,6 +154,8 @@ Bytes ClockSyncMessage::encode() const {
         writer.write(device);
         writer.write(static_cast<uint8_t>(length));
         bytes.insert(bytes.end(), name.begin(), name.begin() + static_cast<std::ptrdiff_t>(length));
+        writer.write(static_cast<uint8_t>(requestedChannel));
+        writer.write(channelRequest);
         break;
     }
     case Type::speakers:
@@ -194,8 +198,18 @@ bool ClockSyncMessage::decode(const uint8_t* data, size_t size, ClockSyncMessage
         result.type = Type::hello;
         uint8_t length = 0;
         if (!reader.read(result.device) || !reader.read(length) || reader.remaining() < length) return false;
-        result.name = reader.rest();
-        result.name.resize(length);
+        Bytes rest = reader.rest();
+        result.name = Bytes(rest.begin(), rest.begin() + length);
+        // The channel request, from followers that send one.
+        if (rest.size() >= size_t{length} + 5) {
+            Reader request(rest.data() + length, rest.size() - length);
+            uint8_t channel = 0;
+            uint32_t number = 0;
+            if (request.read(channel) && request.read(number) && channel <= kSpeakerChannelMaximum) {
+                result.requestedChannel = static_cast<SpeakerChannel>(channel);
+                result.channelRequest = number;
+            }
+        }
         break;
     }
     case static_cast<uint8_t>(Type::speakers): {
