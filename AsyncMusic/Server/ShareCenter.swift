@@ -5,6 +5,7 @@
 
 import AppKit
 import AsyncMusicCore
+import IOKit.ps
 import Network
 import Observation
 import UniformTypeIdentifiers
@@ -282,6 +283,8 @@ final class ShareCenter {
                 name: String(share.info.name),
                 source: String(share.info.source),
                 sourceKind: ShareKind(share.info.sourceKind),
+                deviceKind: ShareDeviceKind(share.info.deviceKind),
+                model: String(share.info.model),
                 listenerCount: Int(share.info.listenerCount),
                 host: String(share.address.host()),
                 port: share.info.clockPort,
@@ -323,6 +326,8 @@ final class ShareCenter {
         case .file: info.sourceKind = .file
         case nil: info.sourceKind = .unknown
         }
+        info.deviceKind = ThisMac.isLaptop ? .laptop : .desktop
+        info.model = std.string(ThisMac.model)
         info.clockPort = port
         info.listenerCount = UInt16(clamping: listeners.count)
         if let announcedInfo {
@@ -372,6 +377,40 @@ private extension ShareKind {
         default: self = .unknown
         }
     }
+}
+
+private extension ShareDeviceKind {
+    init(_ kind: asyncmusic.ShareDeviceKind) {
+        switch kind {
+        case .laptop: self = .laptop
+        case .desktop: self = .desktop
+        case .phone: self = .phone
+        case .tablet: self = .tablet
+        default: self = .unknown
+        }
+    }
+}
+
+/// What this Mac tells listeners about itself, so they can picture it.
+private enum ThisMac {
+    /// The model identifier, e.g. "Mac16,10".
+    static let model: String = {
+        var size = 0
+        guard sysctlbyname("hw.model", nil, &size, nil, 0) == 0, size > 0 else { return "" }
+        var bytes = [CChar](repeating: 0, count: size)
+        guard sysctlbyname("hw.model", &bytes, &size, nil, 0) == 0 else { return "" }
+        return String(cString: bytes)
+    }()
+
+    /// Whether it runs on an internal battery: a MacBook.
+    static let isLaptop: Bool = {
+        guard let info = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+              let sources = IOPSCopyPowerSourcesList(info)?.takeRetainedValue() as? [CFTypeRef] else { return false }
+        return sources.contains { source in
+            let description = IOPSGetPowerSourceDescription(info, source)?.takeUnretainedValue() as? [String: Any]
+            return description?[kIOPSTypeKey] as? String == kIOPSInternalBatteryType
+        }
+    }()
 }
 
 extension asyncmusic.ShareInfo: @retroactive Equatable {}

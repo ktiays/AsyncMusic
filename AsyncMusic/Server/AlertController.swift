@@ -7,16 +7,27 @@ import AppKit
 import Observation
 import SwiftUI
 
-/// Shows the alert for new shares. While the menu bar app shows its icon, the alert grows out of
-/// it, as a popover would; without the app, it appears in the middle of the screen in use.
-final class AlertController {
+/// Shows the alert for new shares. While the menu bar app shows its icon, it's a system popover
+/// pointing at the icon; without the icon, a larger window in the middle of the screen in use,
+/// with a close button. Either closes by itself after a while, unless the pointer rests on it.
+final class AlertController: NSObject, NSPopoverDelegate {
     let center: ShareCenter
 
     /// The app's menu bar icon in screen coordinates, or nil when no icon is shown.
     var statusItemFrame: CGRect? {
         didSet {
-            guard statusItemFrame != oldValue, panel.isVisible else { return }
-            place()
+            guard statusItemFrame != oldValue else { return }
+            switch presentation {
+            case .popover where statusItemFrame != nil:
+                placeAnchor()
+                popover.positioningRect = anchor.contentView?.bounds ?? .zero
+            case .popover, .window:
+                // The icon came or went: the alert takes the other form.
+                close()
+                present()
+            case nil:
+                break
+            }
         }
     }
 
@@ -29,17 +40,47 @@ final class AlertController {
         }
     }
 
-    private let panel = AnchoredPanel(canBecomeKey: false)
-    /// What the alert view reads; it never touches the window itself.
-    private let presentation = AlertPresentation()
+    private enum Presentation {
+        case popover
+        case window
+    }
+
+    private var presentation: Presentation?
+    private let popover = NSPopover()
+    /// An invisible window over the menu bar icon, for the popover to point at.
+    private let anchor = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 1, height: 1), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
+    private lazy var window = AlertWindow { [unowned self] in
+        ShareAlertWindowView(center: center) { [weak self] hovering in self?.hoverChanged(hovering) }
+    }
     private var outsideClickMonitor: Any?
     private var timeout: Task<Void, Never>?
+    private var isHovered = false
+    private var isClosingPopover = false
 
-    private static let duration: TimeInterval = 30
+    private static let popoverDuration: Duration = .seconds(8)
+    /// The window is bigger and away from where the user looks for status: a little longer.
+    private static let windowDuration: Duration = .seconds(12)
 
     init(center: ShareCenter) {
         self.center = center
-        panel.onCancel = { [weak self] in self?.center.dismissAlerts() }
+        super.init()
+        anchor.backgroundColor = .clear
+        anchor.isOpaque = false
+        anchor.hasShadow = false
+        anchor.ignoresMouseEvents = true
+        anchor.hidesOnDeactivate = false
+        anchor.level = .statusBar
+        anchor.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary, .transient, .ignoresCycle]
+
+        popover.behavior = .applicationDefined
+        popover.animates = true
+        popover.delegate = self
+        let controller = NSHostingController(rootView: ShareAlertsView(center: center) { [weak self] hovering in
+            self?.hoverChanged(hovering)
+        })
+        controller.sizingOptions = .preferredContentSize
+        popover.contentViewController = controller
+
         center.onAlert = { [weak self] in self?.show() }
         observe()
     }
@@ -59,50 +100,90 @@ final class AlertController {
             center.panelOpened()
             return
         }
-        presentation.deadline = .now + Self.duration
-        presentation.duration = Self.duration
-        timeout?.cancel()
-        timeout = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(Self.duration))
-            guard !Task.isCancelled else { return }
-            self?.center.dismissAlerts()
-        }
-        if !panel.isVisible {
-            // A fresh view, so it grows out of its anchor again.
-            panel.host { AlertHost(center: center, presentation: presentation) }
-            place()
-            panel.orderFrontRegardless()
-        }
+        scheduleTimeout()
         installOutsideClickMonitor()
+        if presentation == nil { present() }
+    }
+
+    /// Puts the alert on screen in the form that fits: popover under the icon, or window.
+    private func present() {
+        if statusItemFrame != nil {
+            presentation = .popover
+            placeAnchor()
+            anchor.orderFrontRegardless()
+            guard let view = anchor.contentView else { return }
+            popover.show(relativeTo: view.bounds, of: view, preferredEdge: .minY)
+        } else {
+            presentation = .window
+            window.present()
+        }
+    }
+
+    /// Takes the alert off screen, leaving the shares alone.
+    private func close() {
+        switch presentation {
+        case .popover:
+            if popover.isShown {
+                isClosingPopover = true
+                popover.close()
+            }
+        case .window: window.dismiss()
+        case nil: break
+        }
+        presentation = nil
+        isHovered = false
     }
 
     private func hide() {
         timeout?.cancel()
         timeout = nil
-        guard panel.isVisible else { return }
-        panel.orderOut(nil)
         removeOutsideClickMonitor()
+        close()
     }
 
-    private func place() {
-        if let statusItemFrame {
-            let anchor = panel.anchor(below: statusItemFrame)
-            panel.place(at: anchor)
-            presentation.anchorX = statusItemFrame.midX - panel.frame.minX - panel.margin
-        } else {
-            let mouse = NSEvent.mouseLocation
-            let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) } ?? NSScreen.main
-            let visible = screen?.visibleFrame ?? .zero
-            panel.place(at: .center(NSPoint(x: visible.midX, y: visible.midY)))
-            presentation.anchorX = nil
+    func popoverDidClose(_ notification: Notification) {
+        if isClosingPopover {
+            isClosingPopover = false
+            if presentation != .popover { anchor.orderOut(nil) }
+            return
         }
+        // Closed by AppKit rather than through `close()`: the shares are ignored all the same.
+        presentation = nil
+        anchor.orderOut(nil)
+        center.dismissAlerts()
+    }
+
+    /// Closes the alert after a while, counted from now or from when the pointer leaves it.
+    private func scheduleTimeout() {
+        timeout?.cancel()
+        timeout = nil
+        guard !isHovered else { return }
+        let duration = statusItemFrame != nil ? Self.popoverDuration : Self.windowDuration
+        timeout = Task { [weak self] in
+            try? await Task.sleep(for: duration)
+            guard !Task.isCancelled else { return }
+            self?.center.dismissAlerts()
+        }
+    }
+
+    private func hoverChanged(_ hovering: Bool) {
+        isHovered = hovering
+        guard presentation != nil else { return }
+        scheduleTimeout()
+    }
+
+    private func placeAnchor() {
+        guard let statusItemFrame else { return }
+        anchor.setFrame(statusItemFrame, display: false)
     }
 
     private func installOutsideClickMonitor() {
         // `-KeepPanelOpen YES` leaves the alert open on outside clicks, for checking it while developing.
         guard outsideClickMonitor == nil, !UserDefaults.standard.bool(forKey: "KeepPanelOpen") else { return }
         outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
-            guard let self, panel.isVisible else { return }
+            // The window in the middle of the screen has its own close button, and stays put
+            // while the user goes on working around it.
+            guard let self, presentation == .popover else { return }
             center.dismissAlerts()
         }
     }
@@ -111,23 +192,5 @@ final class AlertController {
         guard let outsideClickMonitor else { return }
         NSEvent.removeMonitor(outsideClickMonitor)
         self.outsideClickMonitor = nil
-    }
-}
-
-/// Where the alert's arrow points and when it closes by itself.
-@Observable
-final class AlertPresentation {
-    /// The arrow's position from the alert's leading edge; nil for an alert without one.
-    var anchorX: CGFloat?
-    var deadline = Date.now
-    var duration: TimeInterval = 30
-}
-
-private struct AlertHost: View {
-    let center: ShareCenter
-    let presentation: AlertPresentation
-
-    var body: some View {
-        ShareAlertsView(center: center, anchorX: presentation.anchorX, deadline: presentation.deadline, duration: presentation.duration)
     }
 }

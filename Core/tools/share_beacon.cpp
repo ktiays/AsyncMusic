@@ -65,7 +65,8 @@ void printStatus(const ShareDiscovery::Status& status) {
 int main(int argc, char** argv) {
     if (argc < 2 || (std::strcmp(argv[1], "listen") != 0 && std::strcmp(argv[1], "share") != 0) || (std::strcmp(argv[1], "share") == 0 && argc < 3)) {
         std::printf("Usage: share_beacon listen [--seconds N]\n"
-                    "       share_beacon share <name> [--source S] [--clock-port P] [--update-every S] [--seconds N]\n");
+                    "       share_beacon share <name> [--source S] [--model M] [--device laptop|desktop|phone|tablet]\n"
+                    "                          [--clock-port P] [--update-every S] [--seconds N]\n");
         return 1;
     }
     const bool sharing = std::strcmp(argv[1], "share") == 0;
@@ -79,6 +80,15 @@ int main(int argc, char** argv) {
         const auto has = [&](const char* flag) { return std::strcmp(argv[i], flag) == 0 && i + 1 < argc; };
         if (has("--seconds")) seconds = std::atof(argv[++i]);
         else if (has("--source")) info.source = argv[++i];
+        else if (has("--model")) info.model = argv[++i];
+        else if (has("--device")) {
+            const std::string kind = argv[++i];
+            info.deviceKind = kind == "laptop" ? ShareDeviceKind::laptop
+                : kind == "desktop"            ? ShareDeviceKind::desktop
+                : kind == "phone"              ? ShareDeviceKind::phone
+                : kind == "tablet"             ? ShareDeviceKind::tablet
+                                               : ShareDeviceKind::unknown;
+        }
         else if (has("--clock-port")) info.clockPort = static_cast<uint16_t>(std::atoi(argv[++i]));
         else if (has("--update-every")) updateEvery = std::atof(argv[++i]);
     }

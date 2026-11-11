@@ -25,6 +25,15 @@ nonisolated enum ShareKind: String, Codable, Sendable {
     case unknown
 }
 
+/// What kind of device shares, for when its model has no picture.
+nonisolated enum ShareDeviceKind: String, Codable, Sendable {
+    case laptop
+    case desktop
+    case phone
+    case tablet
+    case unknown
+}
+
 /// A share heard on the network.
 nonisolated struct NearbyShare: Identifiable, Equatable, Codable, Sendable {
     /// The share's ID: a new one each time the device starts sharing.
@@ -33,6 +42,9 @@ nonisolated struct NearbyShare: Identifiable, Equatable, Codable, Sendable {
     var name: String
     var source: String
     var sourceKind: ShareKind
+    var deviceKind: ShareDeviceKind
+    /// The sharing device's model identifier, e.g. "Mac16,10"; empty when it didn't say.
+    var model: String
     var listenerCount: Int
     var host: String
     var port: UInt16

@@ -1095,10 +1095,14 @@ void shareMessagesRoundTrip() {
     info.sourceKind = ShareSourceKind::application;
     info.clockPort = 50123;
     info.listenerCount = 3;
+    info.deviceKind = ShareDeviceKind::desktop;
+    info.model = "Mac16,2";
     const auto announce = ShareMessage::makeAnnounce(0x0102030405060708ull, 0x1112131415161718ull, 7, 2, 7000, info);
     const Bytes bytes = announce.encode();
-    // header, then device, share, sequence, revision, lifetime, port, listeners, kind, name, source
-    CHECK(bytes.size() == 4 + 8 + 8 + 4 + 4 + 2 + 2 + 2 + 1 + 1 + 16 + 1 + 5, "announce length %zu", bytes.size());
+    // header, then device, share, sequence, revision, lifetime, port, listeners, kind, name, source,
+    // device kind, model
+    constexpr size_t olderLength = 4 + 8 + 8 + 4 + 4 + 2 + 2 + 2 + 1 + 1 + 16 + 1 + 5;
+    CHECK(bytes.size() == olderLength + 1 + 1 + 7, "announce length %zu", bytes.size());
     CHECK(bytes[0] == 'A' && bytes[1] == 'D' && bytes[2] == 1 && bytes[3] == 1, "header");
     CHECK(bytes[4] == 0x08 && bytes[11] == 0x01, "little-endian device");
     ShareMessage decoded;
@@ -1112,6 +1116,15 @@ void shareMessagesRoundTrip() {
     extended.insert(extended.end(), {9, 9, 9});
     CHECK(ShareMessage::decode(extended.data(), extended.size(), decoded) && decoded.info == info, "trailing bytes ignored");
 
+    // Older sharers send no device fields: an unknown device.
+    CHECK(ShareMessage::decode(bytes.data(), olderLength, decoded) && decoded.info.deviceKind == ShareDeviceKind::unknown && decoded.info.model.empty()
+              && decoded.info.name == info.name && decoded.info.source == info.source,
+        "announce without device fields");
+    Bytes futureKind = bytes;
+    futureKind[olderLength] = 200;
+    CHECK(ShareMessage::decode(futureKind.data(), futureKind.size(), decoded) && decoded.info.deviceKind == ShareDeviceKind::unknown && decoded.info.model == "Mac16,2",
+        "unknown device kind");
+
     const auto goodbye = ShareMessage::makeGoodbye(5, 6).encode();
     CHECK(goodbye.size() == 20 && ShareMessage::decode(goodbye.data(), goodbye.size(), decoded) && decoded.type == ShareMessage::Type::goodbye && decoded.share == 6,
         "goodbye");
@@ -1120,6 +1133,7 @@ void shareMessagesRoundTrip() {
 
     // Rejected: truncations, other magic or version, unknown types, zero IDs and ports.
     for (size_t length = 0; length < bytes.size(); ++length) {
+        if (length == olderLength) continue;
         CHECK(!ShareMessage::decode(bytes.data(), length, decoded), "truncated to %zu accepted", length);
     }
     Bytes bad = bytes;

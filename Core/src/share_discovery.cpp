@@ -72,6 +72,8 @@ public:
         return true;
     }
 
+    bool isAtEnd() const { return position_ >= size_; }
+
 private:
     const uint8_t* data_;
     size_t size_;
@@ -83,7 +85,7 @@ private:
 // MARK: - ShareInfo, ShareMessage
 
 bool ShareInfo::operator==(const ShareInfo& other) const {
-    return name == other.name && source == other.source && sourceKind == other.sourceKind && clockPort == other.clockPort && listenerCount == other.listenerCount;
+    return name == other.name && source == other.source && sourceKind == other.sourceKind && deviceKind == other.deviceKind && model == other.model && clockPort == other.clockPort && listenerCount == other.listenerCount;
 }
 
 ShareMessage ShareMessage::makeAnnounce(uint64_t device, uint64_t share, uint32_t sequence, uint32_t revision, uint16_t lifetimeMilliseconds, const ShareInfo& info) {
@@ -132,6 +134,8 @@ Bytes ShareMessage::encode() const {
         bytes.push_back(static_cast<uint8_t>(info.sourceKind));
         putText(bytes, info.name);
         putText(bytes, info.source);
+        bytes.push_back(static_cast<uint8_t>(info.deviceKind));
+        putText(bytes, info.model);
         break;
     case Type::goodbye:
         put(bytes, share, 8);
@@ -158,6 +162,12 @@ bool ShareMessage::decode(const uint8_t* data, size_t size, ShareMessage& messag
         }
         // A kind this version does not know is still a share; it just cannot be described.
         result.info.sourceKind = kind <= static_cast<uint8_t>(ShareSourceKind::system) ? static_cast<ShareSourceKind>(kind) : ShareSourceKind::unknown;
+        // Older sharers end here; started, the device fields must be whole.
+        if (!reader.isAtEnd()) {
+            uint8_t deviceKind = 0;
+            if (!reader.read(deviceKind) || !reader.readText(result.info.model)) return false;
+            result.info.deviceKind = deviceKind <= static_cast<uint8_t>(ShareDeviceKind::tablet) ? static_cast<ShareDeviceKind>(deviceKind) : ShareDeviceKind::unknown;
+        }
         if (result.share == 0 || result.info.clockPort == 0) return false;
         break;
     }

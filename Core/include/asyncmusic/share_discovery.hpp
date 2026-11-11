@@ -42,6 +42,16 @@ enum class AM_CLOSED_ENUM ShareSourceKind : uint8_t {
     system = 3,
 };
 
+/// What kind of device shares, for listeners to picture it when `ShareInfo::model` is empty or
+/// unknown to them.
+enum class AM_CLOSED_ENUM ShareDeviceKind : uint8_t {
+    unknown = 0,
+    laptop = 1,
+    desktop = 2,
+    phone = 3,
+    tablet = 4,
+};
+
 /// What a sharing device tells everyone about its share.
 struct ShareInfo {
     /// The sharing device's display name (UTF-8).
@@ -49,6 +59,10 @@ struct ShareInfo {
     /// What it plays, e.g. the app's name (UTF-8, may be empty).
     std::string source;
     ShareSourceKind sourceKind = ShareSourceKind::unknown;
+    ShareDeviceKind deviceKind = ShareDeviceKind::unknown;
+    /// The sharing device's model identifier (ASCII, may be empty), e.g. "Mac16,10" for an Apple
+    /// device, which Apple platforms can turn into a picture of the exact model.
+    std::string model;
     /// The UDP port of the sharer's clock sync leader on the address the announcement came
     /// from; joining a share means following that leader.
     uint16_t clockPort = 0;
@@ -65,6 +79,7 @@ struct ShareInfo {
 ///     header:    magic(2) = "AD" version(1) = 1 type(1)
 ///     announce:  header device(8) share(8) sequence(4) revision(4) lifetime(2, ms) clockPort(2)
 ///                listeners(2) sourceKind(1) nameLength(1) name sourceLength(1) source
+///                [deviceKind(1) modelLength(1) model]
 ///     goodbye:   header device(8) share(8)
 ///     query:     header device(8)
 ///
@@ -78,6 +93,8 @@ struct ShareInfo {
 /// when they stop. Listeners send `query` when they start or come back from sleep, which every
 /// sharer answers with an announcement right away, broadcast and also sent to the asker. Bytes after the fields above are ignored, so
 /// later versions can append fields; a different version number means an incompatible format.
+/// The bracketed device fields were appended that way: an announcement that ends before them is
+/// from an older sharer and describes an unknown device.
 struct ShareMessage {
     enum class AM_CLOSED_ENUM Type : uint8_t {
         announce = 1,
